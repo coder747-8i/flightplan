@@ -1,0 +1,11 @@
+data/raw/
+data/build/
+tiles/*.pmtiles
+node_modules/
+web/dist/
+server/target/
+.env
+*.log
+.venv/
+data/cache/
+data/server.log

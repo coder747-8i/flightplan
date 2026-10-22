@@ -1,0 +1,200 @@
+@import '@fontsource-variable/inter';
+
+:root {
+  --font: 'Inter Variable', system-ui, sans-serif;
+  --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+
+  --bg: #f6f5f1;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-solid: #ffffff;
+  --surface-2: #f1f0ec;
+  --line: rgba(20, 24, 31, 0.09);
+  --line-strong: rgba(20, 24, 31, 0.16);
+  --text: #1b1f26;
+  --text-2: #5c6370;
+  --text-3: #8b919c;
+  --accent: #d4148c; /* route magenta */
+  --accent-soft: rgba(212, 20, 140, 0.1);
+  --blue: #2c63b8;
+  --magenta: #a33a86;
+  --ok: #1f9d6a;
+  --warn: #d48a0b;
+  --bad: #d23a3a;
+  --vfr: #1f9d4a;
+  --mvfr: #2c63b8;
+  --ifr: #d23a3a;
+  --lifr: #b03ab8;
+  --shadow: 0 1px 2px rgba(15, 20, 30, 0.06), 0 8px 28px rgba(15, 20, 30, 0.12);
+  --radius: 14px;
+  --radius-sm: 9px;
+  --blur: saturate(1.6) blur(18px);
+  color-scheme: light;
+}
+
+:root[data-theme='night'] {
+  --bg: #0f1318;
+  --surface: rgba(22, 27, 34, 0.86);
+  --surface-solid: #161b22;
+  --surface-2: #1e252e;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --text: #e7eaee;
+  --text-2: #a2a9b4;
+  --text-3: #6f7782;
+  --accent: #ff3fb4;
+  --accent-soft: rgba(255, 63, 180, 0.14);
+  --blue: #6ea3ff;
+  --magenta: #e77fd0;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 30px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: var(--text);
+}
+
+.glass {
+  background: var(--surface);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.muted {
+  color: var(--text-2);
+}
+
+.faint {
+  color: var(--text-3);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 16px 0 8px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-solid);
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn:hover {
+  background: var(--surface-2);
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: white;
+}
+
+.btn.primary:hover {
+  filter: brightness(1.06);
+}
+
+.btn.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn.ghost:hover {
+  background: var(--surface-2);
+}
+
+.field {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-solid);
+  outline: none;
+  width: 100%;
+}
+
+.field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+/* MapLibre chrome, toned down */
+.maplibregl-ctrl-attrib {
+  background: transparent !important;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.maplibregl-ctrl-scale {
+  background: var(--surface) !important;
+  border-color: var(--text-2) !important;
+  color: var(--text-2);
+  font-size: 10px;
+  border-radius: 3px;
+}
