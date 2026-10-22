@@ -1,30 +1,51 @@
 <script lang="ts">
-  // Windy Map Forecast API (needs WINDY_MAP_KEY in .env, domain-locked key from api.windy.com).
+  // Windy Map Forecast API (key set in Settings; domain-locked on api.windy.com).
   // Opens at the chart's current view with the route drawn on top. Windy allows one instance
   // per page, so it's created once and kept alive while hidden.
-  import { X } from '@lucide/svelte'
+  //
+  // Overlay changes go straight to windy.store on tap. Many overlays (clouds, rain, gusts...)
+  // only exist at the surface, so after each change the level is moved to one Windy says is
+  // available for that overlay; forcing a level it doesn't have makes Windy refuse the overlay.
+  import { X, Layers3 } from '@lucide/svelte'
   import { onMount } from 'svelte'
   import { mapRef } from '../chart/mapRef'
   import { route } from '../stores/route.svelte'
 
   let { open = $bindable(false), apiKey }: { open: boolean; apiKey: string } = $props()
   let status = $state('Loading Windy…')
+  let note = $state('')
   let windy = $state.raw<any>(null)
-  // overlays/levels this Windy key actually allows (read from Windy once it loads)
-  let allowedOverlays = $state<string[] | null>(null)
-  let allowedLevels = $state<string[] | null>(null)
-  let routeLine: any = null
   let overlay = $state('wind')
-  let level = $state('850h')
+  let level = $state('surface')
+  let allowedOverlays = $state<string[]>([])
+  let availLevels = $state<string[]>(['surface'])
+  let routeLine: any = null
+  let pending: string | null = null
+  let pendingTimer: ReturnType<typeof setTimeout> | undefined
+  // Windy's free Testing keys only serve wind, temperature and pressure
+  const testingKey = $derived(allowedOverlays.length > 0 && allowedOverlays.length <= 3)
 
-  const OVERLAYS = [
-    ['wind', 'Wind'], ['gust', 'Gusts'], ['rain', 'Rain, thunder'], ['clouds', 'Clouds'], ['lclouds', 'Low clouds'],
-    ['mclouds', 'Medium clouds'], ['hclouds', 'High clouds'], ['cbase', 'Cloud base'], ['visibility', 'Visibility'],
-    ['temp', 'Temperature'], ['dewpoint', 'Dew point'], ['rh', 'Humidity'], ['pressure', 'Pressure'], ['cape', 'CAPE (storms)'],
-    ['rainAccu', 'Rain accumulation'], ['snowAccu', 'Snow accumulation'], ['snowcover', 'Snow depth'], ['thunder', 'Thunderstorms'],
-    ['radar', 'Radar'], ['satellite', 'Satellite'], ['icing', 'Icing'], ['turbulence', 'Turbulence'], ['ccl', 'Thermals'],
-  ] as const
-  const LEVELS = [['surface', 'Surface'], ['950h', '2,000 ft'], ['900h', '3,000 ft'], ['850h', '5,000 ft'], ['800h', '6,400 ft'], ['700h', '10,000 ft'], ['600h', '14,000 ft'], ['500h', 'FL180'], ['300h', 'FL300']] as const
+  const NAMES: Record<string, string> = {
+    wind: 'Wind', gust: 'Gusts', rain: 'Rain & thunder', thunder: 'Thunderstorms', clouds: 'Clouds', lclouds: 'Low clouds',
+    mclouds: 'Mid clouds', hclouds: 'High clouds', cbase: 'Cloud base', visibility: 'Visibility', temp: 'Temperature',
+    dewpoint: 'Dew point', rh: 'Humidity', pressure: 'Pressure', cape: 'CAPE (storms)', rainAccu: 'Rain total', snowAccu: 'Snow total',
+    snowcover: 'Snow depth', radar: 'Radar', satellite: 'Satellite', icing: 'Icing', turbulence: 'Turbulence', ccl: 'Thermals',
+    gustAccu: 'Max gusts', fog: 'Fog', cloudtop: 'Cloud tops', freezing: 'Freezing level', waves: 'Waves', swell1: 'Swell',
+    sst: 'Sea temp', so2sm: 'SO₂', dustsm: 'Dust', cosc: 'CO', aqi: 'Air quality', uvindex: 'UV index',
+  }
+  // what pilots reach for first; anything else Windy allows follows
+  const PREFERRED = ['wind', 'gust', 'rain', 'thunder', 'clouds', 'lclouds', 'cbase', 'cloudtop', 'visibility', 'fog', 'cape', 'icing', 'turbulence', 'freezing', 'temp', 'pressure', 'radar', 'satellite']
+  const LEVEL_NAMES: Record<string, string> = {
+    surface: 'Surface', '100m': '330 ft', '975h': '1,000 ft', '950h': '2,000 ft', '925h': '2,500 ft', '900h': '3,000 ft', '850h': '5,000 ft',
+    '800h': '6,400 ft', '700h': '10,000 ft', '600h': '14,000 ft', '500h': 'FL180', '400h': 'FL240', '300h': 'FL300', '250h': 'FL340', '200h': 'FL390', '150h': 'FL450',
+  }
+  const LEVEL_ORDER = Object.keys(LEVEL_NAMES)
+
+  const overlays = $derived.by(() => {
+    const list = allowedOverlays.length ? allowedOverlays : PREFERRED
+    return [...PREFERRED.filter((o) => list.includes(o)), ...list.filter((o) => !PREFERRED.includes(o) && NAMES[o])]
+  })
+  const levels = $derived([...availLevels].sort((a, b) => LEVEL_ORDER.indexOf(a) - LEVEL_ORDER.indexOf(b)))
 
   function script(src: string) {
     return new Promise<void>((res, rej) => {
@@ -35,6 +56,50 @@
       s.onerror = () => rej(new Error(`failed to load ${src}`))
       document.head.appendChild(s)
     })
+  }
+
+  function asList(v: unknown): string[] {
+    return Array.isArray(v) ? v.map(String) : typeof v === 'string' && v ? v.split(',') : []
+  }
+
+  /** read back what Windy is actually showing */
+  function sync() {
+    if (!windy) return
+    overlay = windy.store.get('overlay')
+    level = windy.store.get('level')
+    availLevels = asList(windy.store.get('availLevels')).length ? asList(windy.store.get('availLevels')) : asList(windy.store.getAllowed('availLevels'))
+    if (!availLevels.length) availLevels = ['surface']
+    if (pending && overlay === pending) {
+      pending = null
+      note = ''
+    }
+  }
+
+  function pickOverlay(v: string) {
+    if (!windy) return
+    note = ''
+    const s = windy.store
+    s.set('overlay', v)
+    if (s.get('overlay') !== v) s.set('overlay', v, { forceChange: true })
+    // keep the level only if this overlay has it
+    const avail = asList(s.get('availLevels'))
+    if (avail.length && !avail.includes(s.get('level'))) s.set('level', avail.includes('surface') ? 'surface' : avail[0])
+    sync()
+    // Windy applies changes asynchronously; only complain if it still hasn't switched shortly after
+    pending = overlay === v ? null : v
+    clearTimeout(pendingTimer)
+    if (pending) {
+      pendingTimer = setTimeout(() => {
+        sync()
+        if (pending === v && overlay !== v) note = `Windy didn't switch to ${NAMES[v] ?? v}; your Windy key may not include it.`
+      }, 1500)
+    }
+  }
+
+  function pickLevel(l: string) {
+    if (!windy) return
+    windy.store.set('level', l)
+    sync()
   }
 
   function drawRoute() {
@@ -55,9 +120,19 @@
       if (!(window as any).L) await script('https://unpkg.com/leaflet@1.4.0/dist/leaflet.js')
       await script('https://api.windy.com/assets/map-forecast/libBoot.js')
       const c = mapRef.map?.getCenter()
-      ;(window as any).windyInit({ key: apiKey, lat: c?.lat ?? 33, lon: c?.lng ?? -112, zoom: Math.round(mapRef.map?.getZoom() ?? 7), overlay: 'wind', level: '850h' }, (api: any) => {
+      ;(window as any).windyInit({ key: apiKey, lat: c?.lat ?? 33, lon: c?.lng ?? -112, zoom: Math.round(mapRef.map?.getZoom() ?? 7), overlay: 'wind', level: 'surface' }, (api: any) => {
         windy = api
         status = ''
+        try {
+          allowedOverlays = asList(api.store.getAllowed('overlay'))
+        } catch {
+          allowedOverlays = []
+        }
+        // follow changes made through Windy's own controls too
+        api.store.on('overlay', sync)
+        api.store.on('level', sync)
+        api.store.on('availLevels', sync)
+        sync()
         drawRoute()
       })
     } catch (e) {
@@ -69,21 +144,7 @@
     route.waypoints
     drawRoute()
   })
-  // read the selections before the guard so the effect re-runs whenever they change
-  $effect(() => {
-    const o = overlay
-    const l = level
-    if (!windy) return
-    if (windy.store.get('overlay') !== o) windy.store.set('overlay', o)
-    if (windy.store.get('level') !== l) windy.store.set('level', l)
-  })
 
-  const NAMES: Record<string, string> = Object.fromEntries(OVERLAYS)
-  const overlayOptions = $derived(
-    allowedOverlays ? allowedOverlays.map((v) => [v, NAMES[v] ?? v.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())] as const) : OVERLAYS.map((o) => [o[0], o[1]] as const),
-  )
-  const LEVEL_NAMES: Record<string, string> = Object.fromEntries(LEVELS)
-  const levelOptions = $derived(allowedLevels ? allowedLevels.map((v) => [v, LEVEL_NAMES[v] ?? v] as const) : LEVELS.map((l) => [l[0], l[1]] as const))
   $effect(() => {
     if (open && windy) {
       const c = mapRef.map?.getCenter()
@@ -91,6 +152,11 @@
       setTimeout(() => windy.map.invalidateSize(), 50)
     }
   })
+
+  // keep taps on our controls from reaching Leaflet/Windy underneath
+  function stop(e: Event) {
+    e.stopPropagation()
+  }
 </script>
 
 <svelte:head>
@@ -99,11 +165,32 @@
 
 <div class="wrap" class:hidden={!open}>
   <div id="windy"></div>
-  <div class="bar glass">
-    <b>Windy</b>
-    <select class="field" bind:value={overlay}>{#each overlayOptions as [v, l]}<option value={v}>{l}</option>{/each}</select>
-    <select class="field" bind:value={level}>{#each levelOptions as [v, l]}<option value={v}>{l}</option>{/each}</select>
-    <button class="btn" onclick={() => (open = false)}><X size={15} /> Back to chart</button>
+  <div class="bar glass" onpointerdown={stop} ontouchstart={stop} onwheel={stop} role="toolbar" aria-label="Windy layers" tabindex="-1">
+    <div class="top">
+      <span class="title"><Layers3 size={15} /> Windy</span>
+      <button class="btn back" onclick={() => (open = false)}><X size={15} /> Back to chart</button>
+    </div>
+    <div class="chips" aria-label="Layer">
+      {#each overlays as o}
+        <button class="chip" class:on={overlay === o} onclick={() => pickOverlay(o)}>{NAMES[o] ?? o}</button>
+      {/each}
+    </div>
+    {#if levels.length > 1}
+      <div class="chips levels" aria-label="Altitude">
+        {#each levels as l}
+          <button class="chip" class:on={level === l} onclick={() => pickLevel(l)}>{LEVEL_NAMES[l] ?? l}</button>
+        {/each}
+      </div>
+    {/if}
+    {#if note}<div class="note">{note}</div>{/if}
+    {#if testingKey}
+      <div class="note">
+        This Windy key is a <b>Testing</b> key, which Windy limits to wind, temperature and pressure. Clouds, rain, gusts,
+        visibility and the rest need a <b>Professional</b> Map Forecast API key from
+        <a href="https://api.windy.com/keys" target="_blank" rel="noopener noreferrer">api.windy.com/keys</a>
+        (a windy.com Premium subscription doesn't include the API). Paste the new key in Settings.
+      </div>
+    {/if}
   </div>
   {#if status}<div class="status glass">{status}</div>{/if}
 </div>
@@ -127,16 +214,67 @@
     top: 60px;
     left: 50%;
     transform: translateX(-50%);
+    width: min(720px, calc(100% - 24px));
     display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px 6px 14px;
-    z-index: 1000;
-    border-radius: 999px;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    /* above Windy's own UI, which lives in the same stacking context */
+    z-index: 100000;
+    border-radius: 14px;
+    touch-action: manipulation;
   }
-  .bar .field {
+  .top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .title {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-weight: 650;
+  }
+  .back {
+    height: 32px;
+  }
+  .chips {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .chips::-webkit-scrollbar {
+    display: none;
+  }
+  .chip {
+    flex: none;
+    height: 34px;
+    padding: 0 12px;
+    font-size: 12.5px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface-solid);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .chip.on {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+  }
+  .levels .chip {
     height: 30px;
-    width: auto;
+    font-size: 12px;
+  }
+  .note {
+    font-size: 12px;
+    color: var(--warn);
+    line-height: 1.4;
+  }
+  .note a {
+    color: var(--blue);
   }
   .status {
     position: absolute;
@@ -144,7 +282,7 @@
     left: 50%;
     transform: translate(-50%, -50%);
     padding: 12px 16px;
-    z-index: 1000;
+    z-index: 100000;
   }
   :global(.windy-wp) {
     font-weight: 700;

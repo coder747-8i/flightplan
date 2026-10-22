@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api", api)
         .nest_service("/tiles", ServeDir::new(root.join("tiles")))
         .fallback_service(ServeDir::new(&web).fallback(tower_http::services::ServeFile::new(web.join("index.html"))))
+        .layer(axum::middleware::from_fn(cache_headers))
         .layer(CompressionLayer::new())
         .with_state(state);
 
@@ -91,6 +92,26 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("listening on http://{addr}");
     axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
     Ok(())
+}
+
+/// The page must always be revalidated (Safari otherwise keeps running an old bundle);
+/// hashed build assets never change, so they can be cached for good.
+async fn cache_headers(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = req.uri().path().to_string();
+    let mut res = next.run(req).await;
+    let value = if path.starts_with("/assets/") {
+        Some("public, max-age=31536000, immutable")
+    } else if !path.starts_with("/api/") && !path.starts_with("/tiles/") {
+        Some("no-cache")
+    } else {
+        None
+    };
+    if let Some(v) = value {
+        if !res.headers().contains_key(header::CACHE_CONTROL) {
+            res.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static(v));
+        }
+    }
+    res
 }
 
 async fn config(State(s): S) -> Json<Value> {
