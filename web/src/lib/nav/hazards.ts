@@ -53,6 +53,20 @@ function inRing(x: number, y: number, ring: number[][]) {
   }
   return inside
 }
+type BBox = [number, number, number, number]
+function bboxOf(rings: number[][]): BBox {
+  let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity
+  for (const [x, y] of rings) {
+    if (x < a) a = x
+    if (y < b) b = y
+    if (x > c) c = x
+    if (y > d) d = y
+  }
+  return [a, b, c, d]
+}
+const overlaps = (p: BBox, q: BBox) => p[0] <= q[2] && p[2] >= q[0] && p[1] <= q[3] && p[3] >= q[1]
+const inBox = (x: number, y: number, b: BBox) => x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]
+
 function inGeom(lon: number, lat: number, g: GeoJSON.Geometry) {
   const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : []
   return polys.some((p) => inRing(lon, lat, p[0] as number[][]))
@@ -60,6 +74,70 @@ function inGeom(lon: number, lat: number, g: GeoJSON.Geometry) {
 
 const fmtAlt = (v: number) => (v >= 99999 ? 'unlimited' : v === 17999 ? 'FL180' : v >= 18000 ? `FL${Math.round(v / 100)}` : v === 0 ? 'surface' : `${v.toLocaleString()} ft`)
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1)
+
+// Lateral (route-vs-polygon) weather checks don't depend on altitude, so they are cached per
+// route/weather data and not redone while the cruise altitude is dragged.
+let lateralCache: { key: unknown[]; out: Hazard[] } | null = null
+function lateral(h: HazardInput, total: number): Hazard[] {
+  const key = [h.samples, h.tfrs, h.sigmets, h.gairmets, h.departure.getTime(), h.log?.totalTime, Math.max(...h.altitudePath.map((p) => p[1])) >= 18000]
+  if (lateralCache && lateralCache.key.length === key.length && lateralCache.key.every((k, i) => k === key[i])) return lateralCache.out
+  const out: Hazard[] = []
+  // ---- TFRs (lateral check; altitudes are in the NOTAM text) ----
+  const routeBox = bboxOf(h.samples.map((s) => [s.lon, s.lat]))
+  const tfrHits = new Map<string, { f: GeoJSON.Feature; d: number }>()
+  for (const f of h.tfrs.features) {
+    const g = f.geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon
+    const outer = g.type === 'Polygon' ? g.coordinates[0] : g.type === 'MultiPolygon' ? g.coordinates.flatMap((p) => p[0]) : []
+    if (!outer.length) continue
+    const box = bboxOf(outer as number[][])
+    if (!overlaps(box, routeBox)) continue
+    for (const s of h.samples) {
+      if (inBox(s.lon, s.lat, box) && inGeom(s.lon, s.lat, f.geometry)) {
+        const id = (f.properties as any)?.notam
+        if (!tfrHits.has(id)) tfrHits.set(id, { f, d: s.d })
+        break
+      }
+    }
+  }
+  for (const [id, { f, d }] of tfrHits) {
+    const p = f.properties as any
+    out.push({ level: 'warning', category: 'TFR', title: `Route crosses TFR ${id}${p.type ? ` (${String(p.type).toLowerCase()})` : ''}`, detail: `${p.title ?? ''} Read the NOTAM for altitudes and times.`, at: d })
+  }
+
+  // ---- AIRMET / SIGMET / G-AIRMET ----
+  const now = Date.now() / 1000
+  const etaAt = (d: number) => h.departure.getTime() / 1000 + ((h.log!.totalTime * 60) * d) / Math.max(total, 1)
+  for (const sg of h.sigmets) {
+    if (!sg.coords?.length) continue
+    const ring = sg.coords.map((c: any) => [Number(c.lon), Number(c.lat)])
+    const box = bboxOf(ring)
+    if (!overlaps(box, routeBox)) continue
+    const s = h.samples.find((x) => inBox(x.lon, x.lat, box) && inRing(x.lon, x.lat, ring))
+    if (!s) continue
+    const t = etaAt(s.d)
+    if (sg.validTimeTo && sg.validTimeTo < Math.min(t, now)) continue
+    const sev = sg.airSigmetType === 'SIGMET' || sg.hazard === 'CONVECTIVE'
+    out.push({ level: sev ? 'warning' : 'caution', category: 'Weather', title: sg.hazard === 'CONVECTIVE' ? 'Convective SIGMET on your route' : `${sg.airSigmetType} for ${String(sg.hazard).toLowerCase()} on your route`, detail: describeSigmet(sg).summary.slice(1).join('. ') + '.', at: s.d })
+  }
+  const gHits = new Map<string, number>()
+  for (const g of h.gairmets) {
+    if (!g.coords?.length || g.geometryType === 'LINE' || g.hazard === 'FZLVL') continue
+    if (gHits.has(g.hazard)) continue
+    const ring = g.coords.map((c: any) => [Number(c.lon), Number(c.lat)])
+    const box = bboxOf(ring)
+    if (!overlaps(box, routeBox)) continue
+    const s = h.samples.find((x) => inBox(x.lon, x.lat, box) && inRing(x.lon, x.lat, ring))
+    if (s) gHits.set(g.hazard, s.d)
+  }
+  const G_NAME: Record<string, string> = { IFR: 'IFR conditions', MT_OBSC: 'mountain obscuration', 'TURB-HI': 'high-altitude turbulence', 'TURB-LO': 'turbulence below FL180', ICE: 'icing', SFC_WND: 'strong surface wind', LLWS: 'low-level wind shear', M_FZLVL: 'multiple freezing levels' }
+  for (const [hz, d] of gHits) {
+    if (hz === 'TURB-HI' && Math.max(...h.altitudePath.map((p) => p[1])) < 18000) continue
+    out.push({ level: hz === 'IFR' || hz === 'MT_OBSC' || hz === 'ICE' ? 'caution' : 'info', category: 'Weather', title: `G-AIRMET: ${G_NAME[hz] ?? hz} along route`, at: d })
+  }
+
+  lateralCache = { key, out }
+  return out
+}
 
 export function analyze(h: HazardInput): Hazard[] {
   const out: Hazard[] = []
@@ -132,47 +210,7 @@ export function analyze(h: HazardInput): Hazard[] {
     }
   }
 
-  // ---- TFRs (lateral check; altitudes are in the NOTAM text) ----
-  const tfrHits = new Map<string, { f: GeoJSON.Feature; d: number }>()
-  for (const f of h.tfrs.features) {
-    for (const s of h.samples) {
-      if (inGeom(s.lon, s.lat, f.geometry)) {
-        const id = (f.properties as any)?.notam
-        if (!tfrHits.has(id)) tfrHits.set(id, { f, d: s.d })
-        break
-      }
-    }
-  }
-  for (const [id, { f, d }] of tfrHits) {
-    const p = f.properties as any
-    out.push({ level: 'warning', category: 'TFR', title: `Route crosses TFR ${id}${p.type ? ` (${String(p.type).toLowerCase()})` : ''}`, detail: `${p.title ?? ''} Read the NOTAM for altitudes and times.`, at: d })
-  }
-
-  // ---- AIRMET / SIGMET / G-AIRMET ----
-  const now = Date.now() / 1000
-  const etaAt = (d: number) => h.departure.getTime() / 1000 + ((h.log!.totalTime * 60) * d) / Math.max(total, 1)
-  for (const sg of h.sigmets) {
-    if (!sg.coords?.length) continue
-    const ring = sg.coords.map((c: any) => [Number(c.lon), Number(c.lat)])
-    const s = h.samples.find((x) => inRing(x.lon, x.lat, ring))
-    if (!s) continue
-    const t = etaAt(s.d)
-    if (sg.validTimeTo && sg.validTimeTo < Math.min(t, now)) continue
-    const sev = sg.airSigmetType === 'SIGMET' || sg.hazard === 'CONVECTIVE'
-    out.push({ level: sev ? 'warning' : 'caution', category: 'Weather', title: sg.hazard === 'CONVECTIVE' ? 'Convective SIGMET on your route' : `${sg.airSigmetType} for ${String(sg.hazard).toLowerCase()} on your route`, detail: describeSigmet(sg).summary.slice(1).join('. ') + '.', at: s.d })
-  }
-  const gHits = new Map<string, number>()
-  for (const g of h.gairmets) {
-    if (!g.coords?.length || g.geometryType === 'LINE' || g.hazard === 'FZLVL') continue
-    const ring = g.coords.map((c: any) => [Number(c.lon), Number(c.lat)])
-    const s = h.samples.find((x) => inRing(x.lon, x.lat, ring))
-    if (s && !gHits.has(g.hazard)) gHits.set(g.hazard, s.d)
-  }
-  const G_NAME: Record<string, string> = { IFR: 'IFR conditions', MT_OBSC: 'mountain obscuration', 'TURB-HI': 'high-altitude turbulence', 'TURB-LO': 'turbulence below FL180', ICE: 'icing', SFC_WND: 'strong surface wind', LLWS: 'low-level wind shear', M_FZLVL: 'multiple freezing levels' }
-  for (const [hz, d] of gHits) {
-    if (hz === 'TURB-HI' && Math.max(...h.altitudePath.map((p) => p[1])) < 18000) continue
-    out.push({ level: hz === 'IFR' || hz === 'MT_OBSC' || hz === 'ICE' ? 'caution' : 'info', category: 'Weather', title: `G-AIRMET: ${G_NAME[hz] ?? hz} along route`, at: d })
-  }
+  out.push(...lateral(h, total))
 
   // ---- destination / departure weather ----
   const ends = [h.waypoints[0], h.waypoints[h.waypoints.length - 1]]

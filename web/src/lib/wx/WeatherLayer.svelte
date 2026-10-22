@@ -15,9 +15,9 @@
   class WxState {
     show = $state(load('wx', { radar: false, metars: true, tfr: true, sigmet: true, gairmet: false, pireps: false }))
     radarOpacity = $state(0.65)
-    tfrs = $state<GeoJSON.FeatureCollection>({ type: 'FeatureCollection', features: [] })
-    sigmets = $state<any[]>([])
-    gairmets = $state<any[]>([])
+    tfrs = $state.raw<GeoJSON.FeatureCollection>({ type: 'FeatureCollection', features: [] })
+    sigmets = $state.raw<any[]>([])
+    gairmets = $state.raw<any[]>([])
     gairmetHour = $state(0)
     metarCount = $state(0)
     updated = $state<Date | null>(null)

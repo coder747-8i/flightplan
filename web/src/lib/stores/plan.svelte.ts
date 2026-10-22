@@ -6,6 +6,7 @@ import { analyze, type Hazard } from '../nav/hazards'
 import { wx } from '../wx/WeatherLayer.svelte'
 import { aircraft } from './aircraft.svelte'
 import { route } from './route.svelte'
+import { timed } from '../perf'
 
 export interface Crossing {
   kind: string
@@ -38,11 +39,13 @@ const INCURSION_LEVEL: Record<string, Incursion['level'] | undefined> = {
   P: 'warning', R: 'warning', B: 'caution', C: 'caution', MOA: 'caution', D: 'info', W: 'info', A: 'info',
 }
 
+// Bulk data (samples, airspace, weather) is stored with $state.raw: it is always replaced whole,
+// and deep proxies made every coordinate read in the geometry loops go through reactivity.
 class PlanState {
-  samples = $state<ProfileSample[]>([])
-  obstacles = $state<ProfileObstacle[]>([])
-  airspace = $state<Crossing[]>([])
-  winds = $state<(WindPoint | undefined)[]>([])
+  samples = $state.raw<ProfileSample[]>([])
+  obstacles = $state.raw<ProfileObstacle[]>([])
+  airspace = $state.raw<Crossing[]>([])
+  winds = $state.raw<(WindPoint | undefined)[]>([])
   windSource = $state('')
   loading = $state(false)
   error = $state('')
@@ -50,12 +53,12 @@ class PlanState {
   depElev = $state(0)
   destElev = $state(0)
   /** METARs and runway headings for the departure and destination airports */
-  endMetars = $state<Record<string, any>>({})
-  endRunways = $state<Record<string, { id: string; hdg: number }[]>>({})
+  endMetars = $state.raw<Record<string, any>>({})
+  endRunways = $state.raw<Record<string, { id: string; hdg: number }[]>>({})
   /** along-track NM under the pointer, shared by the map and the profile */
   hover = $state<{ d: number; from: 'map' | 'profile' } | null>(null)
   /** airspace picked in the profile (highlighted on the map) */
-  picked = $state<Crossing | null>(null)
+  picked = $state.raw<Crossing | null>(null)
 
   departureTime = $derived(route.departure ? new Date(route.departure) : new Date())
 
@@ -64,7 +67,7 @@ class PlanState {
   log = $derived.by((): NavLog | null => {
     const ac = aircraft.active
     if (!ac || route.waypoints.length < 2) return null
-    return buildNavLog({
+    return timed('navlog', () => buildNavLog({
       waypoints: route.waypoints,
       aircraft: ac,
       cruise: route.cruise,
@@ -72,7 +75,7 @@ class PlanState {
       depElev: this.depElev,
       destElev: this.destElev,
       winds: this.winds,
-    })
+    }))
   })
 
   /** planned altitude along the route: [along-track NM, ft MSL] */
@@ -122,7 +125,7 @@ class PlanState {
   })
 
   /** where the planned altitude actually enters controlled / special-use airspace */
-  incursions = $derived.by((): Incursion[] => {
+  incursions = $derived.by((): Incursion[] => timed('incursions', () => {
     const out: Incursion[] = []
     for (const c of this.airspace) {
       const level = INCURSION_LEVEL[c.kind]
@@ -143,10 +146,10 @@ class PlanState {
       if (cur) out.push(cur)
     }
     return out.sort((a, b) => a.from - b.from)
-  })
+  }))
 
   hazards = $derived.by((): Hazard[] =>
-    analyze({
+    timed('hazards', () => analyze({
       waypoints: route.waypoints,
       samples: this.samples,
       obstacles: this.obstacles,
@@ -160,7 +163,7 @@ class PlanState {
       gairmets: wx.gairmets,
       metars: this.endMetars,
       runways: this.endRunways,
-    }),
+    })),
   )
 }
 
