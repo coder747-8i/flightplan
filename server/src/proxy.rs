@@ -62,6 +62,11 @@ impl Cached {
         self.store.lock().insert(key.to_string(), (Instant::now(), body, "application/json".into()));
     }
 
+    /// Drop cached entries whose key starts with `prefix` (after a key change).
+    pub fn forget_prefix(&self, prefix: &str) {
+        self.store.lock().retain(|k, _| !k.starts_with(prefix));
+    }
+
     pub async fn get_json(&self, url: &str, ttl: Duration) -> anyhow::Result<serde_json::Value> {
         let (b, _) = self.get(url, ttl).await?;
         Ok(serde_json::from_slice(&b)?)

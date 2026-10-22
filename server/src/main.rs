@@ -6,6 +6,7 @@ mod db;
 mod geo;
 mod notam;
 mod proxy;
+mod settings;
 mod terrain;
 mod wx;
 
@@ -26,10 +27,7 @@ pub struct AppState {
     pub airspace: airspace::Airspace,
     pub terrain: terrain::Terrain,
     pub cache: proxy::Cached,
-    pub windy_point_key: Option<String>,
-    pub windy_map_key: Option<String>,
-    pub notam_id: Option<String>,
-    pub notam_secret: Option<String>,
+    pub settings: settings::Settings,
 }
 
 type S = State<Arc<AppState>>;
@@ -62,10 +60,7 @@ async fn main() -> anyhow::Result<()> {
         airspace: airspace::Airspace::load(&root.join("data/build/airspace_index.json"))?,
         terrain: terrain::Terrain::new(root.join("data/cache/terrarium"), http.clone()),
         cache: proxy::Cached::new(http),
-        windy_point_key: std::env::var("WINDY_POINT_KEY").ok().filter(|k| !k.is_empty()),
-        windy_map_key: std::env::var("WINDY_MAP_KEY").ok().filter(|k| !k.is_empty()),
-        notam_id: std::env::var("FAA_NOTAM_CLIENT_ID").ok().filter(|k| !k.is_empty()),
-        notam_secret: std::env::var("FAA_NOTAM_CLIENT_SECRET").ok().filter(|k| !k.is_empty()),
+        settings: settings::Settings::load(root.join("data/settings.json")),
     });
 
     let api = Router::new()
@@ -80,7 +75,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/elevation", get(elevation))
         .route("/fbo/{id}", get(fbo))
         .merge(wx::routes())
-        .merge(notam::routes());
+        .merge(notam::routes())
+        .merge(settings::routes());
 
     let web = root.join("web/dist");
     let app = Router::new()
@@ -98,10 +94,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn config(State(s): S) -> Json<Value> {
+    let k = s.settings.get();
     Json(json!({
-        "windyMapKey": s.windy_map_key,
-        "windyPoint": s.windy_point_key.is_some(),
-        "notams": s.notam_id.is_some() && s.notam_secret.is_some(),
+        "windyMapKey": k.windy_map,
+        "windyPoint": k.windy_point.is_some(),
+        "notams": k.notam_id.is_some() && k.notam_secret.is_some(),
     }))
 }
 

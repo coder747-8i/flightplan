@@ -150,7 +150,7 @@ const LEVELS: [(u32, f64); 10] =
 /// Winds and temperatures aloft at each point, hourly. Uses Windy when a key is configured.
 async fn winds(State(s): S, Json(req): Json<WindsReq>) -> ApiResult<Json<Value>> {
     let pts: Vec<[f64; 2]> = req.points.into_iter().take(40).collect();
-    let windy = s.windy_point_key.clone();
+    let windy = s.settings.get().windy_point;
     let results: Vec<Value> = stream::iter(pts.into_iter().map(|p| {
         let s = s.clone();
         let windy = windy.clone();

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Layers, Route, CloudSun, Plane, FileText, CircleHelp, Moon, Sun } from '@lucide/svelte'
+  import { Layers, Route, CloudSun, Plane, FileText, CircleHelp, Moon, Sun, Settings } from '@lucide/svelte'
   import { app, type Panel } from '../stores/app.svelte'
 
   const items: { id: Panel; label: string; icon: typeof Layers }[] = [
@@ -30,6 +30,10 @@
     </button>
   {/each}
   <div class="spacer"></div>
+  <button class:active={app.panel === 'settings'} onclick={() => toggle('settings')} title="Settings & API keys" data-tour="rail-settings">
+    <Settings size={18} strokeWidth={1.8} />
+    <span>Settings</span>
+  </button>
   <button onclick={() => (app.theme = app.theme === 'day' ? 'night' : 'day')} title="Day / night chart" data-tour="rail-theme">
     {#if app.theme === 'day'}<Moon size={18} strokeWidth={1.8} />{:else}<Sun size={18} strokeWidth={1.8} />{/if}
     <span>{app.theme === 'day' ? 'Night' : 'Day'}</span>

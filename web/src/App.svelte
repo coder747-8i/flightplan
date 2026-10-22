@@ -14,19 +14,19 @@
   import AircraftPanel from './lib/ui/AircraftPanel.svelte'
   import Briefing from './lib/ui/Briefing.svelte'
   import { app } from './lib/stores/app.svelte'
-  import { api } from './lib/api'
+  import SettingsPanel from './lib/ui/SettingsPanel.svelte'
+  import { config } from './lib/stores/config.svelte'
 
-  let windyKey = $state<string | null>(null)
+  const windyKey = $derived(config.windyMapKey)
   let windyOpen = $state(false)
   let windyLoaded = $state(false)
-  api.config().then((c) => (windyKey = c.windyMapKey)).catch(() => {})
 
   $effect(() => {
     document.documentElement.dataset.theme = app.theme
   })
 </script>
 
-<main style:--panel-offset={app.panel !== 'none' ? `${(app.panel === 'route' || app.panel === 'aircraft' ? 380 : 340) + 100}px` : '88px'}>
+<main style:--panel-offset={app.panel !== 'none' ? `${(['route', 'aircraft', 'settings'].includes(app.panel) ? 380 : 340) + 100}px` : '88px'}>
   <MapView />
   <WeatherLayer />
   <RouteLayer />
@@ -38,6 +38,7 @@
   {#if app.panel === 'route'}<RoutePanel />{/if}
   {#if app.panel === 'weather'}<WeatherPanel windyAvailable={!!windyKey} onWindy={() => { windyLoaded = true; windyOpen = true; app.panel = 'none' }} />{/if}
   {#if app.panel === 'aircraft'}<AircraftPanel />{/if}
+  {#if app.panel === 'settings'}<SettingsPanel />{/if}
   <ProfileDrawer />
   <InfoCard />
   {#if app.panel === 'briefing'}<Briefing />{/if}

@@ -137,7 +137,8 @@ fn normalise(item: &Value) -> Option<(String, Value)> {
 }
 
 async fn notams(State(s): State<Arc<AppState>>, Json(req): Json<NotamReq>) -> ApiResult<Json<Value>> {
-    let (Some(id), Some(secret)) = (s.notam_id.clone(), s.notam_secret.clone()) else {
+    let keys = s.settings.get();
+    let (Some(id), Some(secret)) = (keys.notam_id, keys.notam_secret) else {
         return Ok(Json(json!({"configured": false, "items": []})));
     };
     let radius = req.radius.unwrap_or(25.0).clamp(5.0, 100.0);

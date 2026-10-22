@@ -4,6 +4,7 @@
   import Toggle from '../ui/Toggle.svelte'
   import { api } from '../api'
   import { route } from '../stores/route.svelte'
+  import { app } from '../stores/app.svelte'
   import { wx } from './WeatherLayer.svelte'
   import { fltCatColor, fmtAge } from './format'
 
@@ -39,7 +40,7 @@
       <span><b>Open Windy</b><small>Wind, clouds, rain, icing and more, with your route drawn on top</small></span>
     </button>
   {:else}
-    <p class="note">Add your Windy Map Forecast key as <code>WINDY_MAP_KEY</code> in <code>.env</code> to turn on the Windy view.</p>
+    <button class="note link" onclick={() => (app.panel = 'settings')}>Add your Windy Map Forecast key in <b>Settings</b> to turn on the Windy view →</button>
   {/if}
 
   <div class="section-title">On the chart</div>
@@ -106,16 +107,18 @@
     opacity: 0.85;
     font-size: 11.5px;
   }
+  .note.link {
+    width: 100%;
+    text-align: left;
+    border: 0;
+    cursor: pointer;
+  }
   .note {
     font-size: 12px;
     color: var(--text-2);
     background: var(--surface-2);
     padding: 10px;
     border-radius: 9px;
-  }
-  code {
-    font-family: var(--mono);
-    font-size: 11.5px;
   }
   .cats {
     display: flex;

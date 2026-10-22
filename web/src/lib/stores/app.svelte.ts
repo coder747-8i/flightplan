@@ -1,7 +1,7 @@
 // App-wide state (Svelte 5 runes). Viewer conveniences persist in localStorage.
 import type { LayerGroup } from '../chart/style'
 
-export type Panel = 'none' | 'layers' | 'route' | 'weather' | 'aircraft' | 'briefing' | 'help'
+export type Panel = 'none' | 'layers' | 'route' | 'weather' | 'aircraft' | 'briefing' | 'help' | 'settings'
 
 const DEFAULT_LAYERS: Record<LayerGroup, boolean> = {
   terrain: true,

@@ -9,3 +9,4 @@ server/target/
 .venv/
 data/cache/
 data/server.log
+data/settings.json
