@@ -16,6 +16,26 @@ export interface Crossing {
   times: string
   from: number
   to: number
+  /** simplified outline (polygons -> rings -> [lon, lat]) for highlighting on the map */
+  geom?: [number, number][][][]
+}
+
+/** a stretch of the route where the planned altitude is inside a volume */
+export interface Incursion {
+  c: Crossing
+  from: number
+  to: number
+  level: 'warning' | 'caution' | 'info'
+}
+
+export interface TerrainConflict {
+  from: number
+  to: number
+  level: 'warn' | 'bad'
+}
+
+const INCURSION_LEVEL: Record<string, Incursion['level'] | undefined> = {
+  P: 'warning', R: 'warning', B: 'caution', C: 'caution', MOA: 'caution', D: 'info', W: 'info', A: 'info',
 }
 
 class PlanState {
@@ -32,12 +52,16 @@ class PlanState {
   /** METARs and runway headings for the departure and destination airports */
   endMetars = $state<Record<string, any>>({})
   endRunways = $state<Record<string, { id: string; hdg: number }[]>>({})
+  /** along-track NM under the pointer, shared by the map and the profile */
+  hover = $state<{ d: number; from: 'map' | 'profile' } | null>(null)
+  /** airspace picked in the profile (highlighted on the map) */
+  picked = $state<Crossing | null>(null)
 
-  get departureTime(): Date {
-    return route.departure ? new Date(route.departure) : new Date()
-  }
+  departureTime = $derived(route.departure ? new Date(route.departure) : new Date())
 
-  get log(): NavLog | null {
+  // Everything below is memoised with $derived: these are read per terrain sample and on every
+  // pointer move, so recomputing them on each read froze the page.
+  log = $derived.by((): NavLog | null => {
     const ac = aircraft.active
     if (!ac || route.waypoints.length < 2) return null
     return buildNavLog({
@@ -49,10 +73,80 @@ class PlanState {
       destElev: this.destElev,
       winds: this.winds,
     })
+  })
+
+  /** planned altitude along the route: [along-track NM, ft MSL] */
+  altitudePath = $derived.by((): [number, number][] => {
+    const log = this.log
+    if (!log || !log.rows.length) return []
+    const toc = log.tocDist ?? 0
+    const tod = log.todDist ?? log.totalDist
+    const cruise = Math.max(route.cruise, this.depElev)
+    return [
+      [0, this.depElev],
+      [toc, cruise],
+      [tod, cruise],
+      [log.totalDist, this.destElev + 1000], // arrive at pattern altitude
+    ]
+  })
+
+  total = $derived(this.samples.length ? this.samples[this.samples.length - 1].d : 0)
+
+  /** planned altitude at along-track distance d */
+  altAt(d: number) {
+    const p = this.altitudePath
+    for (let i = 1; i < p.length; i++) {
+      if (d <= p[i][0]) {
+        const f = (d - p[i - 1][0]) / Math.max(p[i][0] - p[i - 1][0], 1e-6)
+        return p[i - 1][1] + (p[i][1] - p[i - 1][1]) * f
+      }
+    }
+    return p[p.length - 1]?.[1] ?? 0
   }
 
-  get hazards(): Hazard[] {
-    return analyze({
+  /** stretches with under 1,000 / 500 ft clearance over the highest terrain within 1 NM */
+  terrainConflicts = $derived.by((): TerrainConflict[] => {
+    const out: TerrainConflict[] = []
+    if (!this.altitudePath.length) return out
+    const total = this.total
+    for (const s of this.samples) {
+      if (s.d < 5 || s.d > total - 5) continue // departure climb and pattern entry
+      const clr = this.altAt(s.d) - s.max
+      const level = clr < 500 ? 'bad' : clr < 1000 ? 'warn' : null
+      if (!level) continue
+      const last = out[out.length - 1]
+      if (last && last.level === level && s.d - last.to < 0.6) last.to = s.d
+      else out.push({ from: s.d, to: s.d, level })
+    }
+    return out
+  })
+
+  /** where the planned altitude actually enters controlled / special-use airspace */
+  incursions = $derived.by((): Incursion[] => {
+    const out: Incursion[] = []
+    for (const c of this.airspace) {
+      const level = INCURSION_LEVEL[c.kind]
+      if (!level) continue
+      let cur: Incursion | null = null
+      for (const s of this.samples) {
+        if (s.d < c.from || s.d > c.to) continue
+        const alt = this.altAt(s.d)
+        const floor = c.lo_agl ? s.elev + c.lo : c.lo
+        const inside = alt >= floor && alt <= c.hi
+        if (inside && !cur) cur = { c, from: s.d, to: s.d, level }
+        else if (inside && cur) cur.to = s.d
+        else if (!inside && cur) {
+          out.push(cur)
+          cur = null
+        }
+      }
+      if (cur) out.push(cur)
+    }
+    return out.sort((a, b) => a.from - b.from)
+  })
+
+  hazards = $derived.by((): Hazard[] =>
+    analyze({
       waypoints: route.waypoints,
       samples: this.samples,
       obstacles: this.obstacles,
@@ -66,23 +160,8 @@ class PlanState {
       gairmets: wx.gairmets,
       metars: this.endMetars,
       runways: this.endRunways,
-    })
-  }
-
-  /** planned altitude along the route: [along-track NM, ft MSL] */
-  get altitudePath(): [number, number][] {
-    const log = this.log
-    if (!log || !log.rows.length) return []
-    const toc = log.tocDist ?? 0
-    const tod = log.todDist ?? log.totalDist
-    const cruise = Math.max(route.cruise, this.depElev)
-    return [
-      [0, this.depElev],
-      [toc, cruise],
-      [tod, cruise],
-      [log.totalDist, this.destElev + 1000], // arrive at pattern altitude
-    ]
-  }
+    }),
+  )
 }
 
 export const plan = new PlanState()

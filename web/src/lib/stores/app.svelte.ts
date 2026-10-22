@@ -50,6 +50,8 @@ class AppState {
   altitude = $state(load('altitude', { enabled: false, lo: 0, hi: 12500 }))
   panel = $state<Panel>('none')
   profileOpen = $state(load('prefs2', { profileOpen: true }).profileOpen)
+  /** show coded weather/remarks as raw text instead of plain English */
+  rawWx = $state(load('prefs3', { rawWx: false }).rawWx)
   /** what the info card shows: an airport id, or a list of things under a map click */
   selection = $state<null | { kind: 'airport'; id: string } | { kind: 'point'; lngLat: [number, number]; items: PointItem[] }>(null)
   cursor = $state<{ lat: number; lon: number; zoom: number } | null>(null)
@@ -62,6 +64,8 @@ export interface PointItem {
   subtitle: string
   color?: string
   id?: string
+  /** coded text to render decoded (METAR, PIREP, SIGMET ...) */
+  decode?: { kind: 'metar' | 'taf' | 'pirep' | 'sigmet' | 'gairmet' | 'remark'; raw?: string; data?: any }
 }
 
 export const app = new AppState()
@@ -71,4 +75,5 @@ $effect.root(() => {
   $effect(() => save('altitude', app.altitude))
   $effect(() => save('prefs', { theme: app.theme }))
   $effect(() => save('prefs2', { profileOpen: app.profileOpen }))
+  $effect(() => save('prefs3', { rawWx: app.rawWx }))
 })

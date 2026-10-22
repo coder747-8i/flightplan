@@ -1,37 +1,38 @@
 <script lang="ts">
   // Vertical profile: terrain (centerline + corridor high point), obstacles, airspace volumes
-  // the route passes through, planned climb/cruise/descent, freezing level. Drag the magenta
-  // cruise line to change altitude; hover to read clearance and see the spot on the map.
-  import { ChevronDown, Mountain, Snowflake } from '@lucide/svelte'
-  import type { GeoJSONSource } from 'maplibre-gl'
-  import { onDestroy } from 'svelte'
+  // the route passes through, planned climb/cruise/descent, freezing level, plus a strip of
+  // warnings (terrain clearance, airspace incursions) you can tap. Hover/touch syncs with the
+  // map; drag the magenta cruise line to change altitude; tap a volume to see that airspace.
+  import { ChevronDown, Mountain, Snowflake, TriangleAlert, OctagonAlert, X } from '@lucide/svelte'
   import { app } from '../stores/app.svelte'
-  import { plan } from '../stores/plan.svelte'
+  import { plan, type Crossing } from '../stores/plan.svelte'
   import { route } from '../stores/route.svelte'
-  import { mapRef } from '../chart/mapRef'
-  import { pointAlong, distanceNm } from '../nav/geo'
+  import { distanceNm } from '../nav/geo'
 
   let width = $state(800)
   let showE = $state(false)
-  const H = 210
-  const PAD = { l: 52, r: 16, t: 14, b: 26 }
+  const H = 230
+  const STRIP = 20 // warning strip above the chart
+  const PAD = { l: 52, r: 16, t: 14 + STRIP, b: 26 }
 
-  const total = $derived(plan.samples.length ? plan.samples[plan.samples.length - 1].d : 0)
-  const terrainMax = $derived(Math.max(0, ...plan.samples.map((s) => s.max)))
-  const yMax = $derived.by(() => {
-    const top = Math.max(route.cruise + 2500, terrainMax + 3000, 4000)
-    return Math.ceil(top / 1000) * 1000
-  })
-  const x = (d: number) => PAD.l + (d / Math.max(total, 0.01)) * (width - PAD.l - PAD.r)
-  const y = (ft: number) => PAD.t + (1 - Math.min(ft, yMax) / yMax) * (H - PAD.t - PAD.b)
-  const dAt = (px: number) => ((px - PAD.l) / (width - PAD.l - PAD.r)) * total
+  const total = $derived(plan.total)
+  const terrainMax = $derived(plan.samples.reduce((m, s) => Math.max(m, s.max), 0))
+  const yMax = $derived(Math.ceil(Math.max(route.cruise + 2500, terrainMax + 3000, 4000) / 1000) * 1000)
+  const plotW = $derived(Math.max(1, width - PAD.l - PAD.r))
+  const x = (d: number) => PAD.l + (d / Math.max(total, 0.01)) * plotW
+  const y = (ft: number) => PAD.t + (1 - Math.min(Math.max(ft, 0), yMax) / yMax) * (H - PAD.t - PAD.b)
+  const dAt = (px: number) => Math.max(0, Math.min(total, ((px - PAD.l) / plotW) * total))
 
-  const terrainPath = $derived.by(() => {
+  // thin the samples to ~1 per 2 px for drawing
+  const drawSamples = $derived.by(() => {
     const s = plan.samples
-    if (!s.length) return ''
-    return `M${x(0)},${y(0)} ` + s.map((p) => `L${x(p.d).toFixed(1)},${y(p.elev).toFixed(1)}`).join(' ') + ` L${x(total)},${y(0)} Z`
+    const step = Math.max(1, Math.floor(s.length / (plotW / 2)))
+    return step === 1 ? s : s.filter((_, i) => i % step === 0 || i === s.length - 1)
   })
-  const corridorPath = $derived(plan.samples.map((p, i) => `${i ? 'L' : 'M'}${x(p.d).toFixed(1)},${y(p.max).toFixed(1)}`).join(' '))
+  const terrainPath = $derived(
+    drawSamples.length ? `M${x(0)},${y(0)} ` + drawSamples.map((p) => `L${x(p.d).toFixed(1)},${y(p.elev).toFixed(1)}`).join(' ') + ` L${x(total)},${y(0)} Z` : '',
+  )
+  const corridorPath = $derived(drawSamples.map((p, i) => `${i ? 'L' : 'M'}${x(p.d).toFixed(1)},${y(p.max).toFixed(1)}`).join(' '))
   const altPath = $derived(plan.altitudePath.map(([d, a], i) => `${i ? 'L' : 'M'}${x(d).toFixed(1)},${y(a).toFixed(1)}`).join(' '))
 
   const KIND_STYLE: Record<string, { color: string; dash?: string; fill: number; label: string }> = {
@@ -48,28 +49,28 @@
     A: { color: 'var(--magenta)', fill: 0.08, label: 'A' },
     MOA: { color: 'var(--magenta)', fill: 0.1, label: 'MOA' },
   }
+  const fmtAlt = (v: number) => (v >= 99999 ? 'UNL' : v >= 17999 ? `FL${Math.round((v + 1) / 100)}` : v === 0 ? 'SFC' : `${Math.round(v / 100)}`)
+  const rangeText = (c: Crossing) =>
+    `${c.lo_agl ? `${c.lo.toLocaleString()} AGL` : c.lo === 0 ? 'SFC' : c.lo.toLocaleString()} – ${c.hi >= 99999 ? 'unlimited' : c.hi === 17999 ? 'FL180' : c.hi.toLocaleString()}`
 
   const volumes = $derived(
     plan.airspace
-      .filter((c) => KIND_STYLE[c.kind] && (showE || !c.kind.startsWith('E')))
-      .filter((c) => c.to - c.from > 0.05)
+      .filter((c) => KIND_STYLE[c.kind] && (showE || !c.kind.startsWith('E')) && c.to - c.from > 0.05)
       .map((c) => {
         const st = KIND_STYLE[c.kind]
-        // AGL floors follow the terrain
-        let d: string
         const hi = Math.min(c.hi, yMax)
+        let d: string
         if (c.lo_agl) {
-          const pts = plan.samples.filter((s) => s.d >= c.from && s.d <= c.to)
+          // AGL floors follow the terrain
+          const pts = drawSamples.filter((s) => s.d >= c.from && s.d <= c.to)
           d = `M${x(c.from)},${y(hi)} L${x(c.to)},${y(hi)} ` + [...pts].reverse().map((s) => `L${x(s.d)},${y(s.elev + c.lo)}`).join(' ') + ' Z'
         } else {
           d = `M${x(c.from)},${y(hi)} L${x(c.to)},${y(hi)} L${x(c.to)},${y(c.lo)} L${x(c.from)},${y(c.lo)} Z`
         }
-        const fmt = (v: number) => (v >= 99999 ? 'UNL' : v >= 17999 ? 'FL180' : v === 0 ? 'SFC' : `${Math.round(v / 100)}`)
-        return { ...c, st, d, label: `${st.label} ${fmt(c.hi)}/${c.lo_agl ? c.lo + 'AGL' : fmt(c.lo)}`, cx: (x(c.from) + x(c.to)) / 2, wide: x(c.to) - x(c.from) > 46 }
+        return { c, st, d, label: `${st.label} ${fmtAlt(c.hi)}/${c.lo_agl ? c.lo + 'AGL' : fmtAlt(c.lo)}`, cx: (x(c.from) + x(c.to)) / 2, wide: x(c.to) - x(c.from) > 46 }
       }),
   )
 
-  // waypoint ticks
   const ticks = $derived.by(() => {
     const w = route.waypoints
     let acc = 0
@@ -79,7 +80,7 @@
     })
   })
 
-  // freezing level per waypoint (from the winds/temps aloft data, nearest forecast hour)
+  // freezing level per waypoint from the temperatures aloft (nearest forecast hour)
   const freezing = $derived.by(() => {
     const out: { d: number; ft: number }[] = []
     const t = plan.departureTime.getTime() / 1000
@@ -109,86 +110,76 @@
   })
   const freezePath = $derived(freezing.map((f, i) => `${i ? 'L' : 'M'}${x(f.d)},${y(f.ft)}`).join(' '))
 
-  // clearance warnings along the planned path
-  function plannedAlt(d: number) {
-    const p = plan.altitudePath
-    for (let i = 1; i < p.length; i++) {
-      if (d <= p[i][0]) {
-        const f = (d - p[i - 1][0]) / Math.max(p[i][0] - p[i - 1][0], 1e-6)
-        return p[i - 1][1] + (p[i][1] - p[i - 1][1]) * f
-      }
-    }
-    return p[p.length - 1]?.[1] ?? 0
-  }
-  const conflicts = $derived.by(() => {
-    const out: { from: number; to: number; level: 'warn' | 'bad' }[] = []
-    if (!plan.altitudePath.length) return out
-    const s = plan.samples
-    for (const p of s) {
-      // ignore the first/last 5 NM (departure climb and pattern entry)
-      if (p.d < 5 || p.d > total - 5) continue
-      const clr = plannedAlt(p.d) - p.max
-      const level = clr < 500 ? 'bad' : clr < 1000 ? 'warn' : null
-      if (!level) continue
-      const last = out[out.length - 1]
-      if (last && last.level === level && p.d - last.to < 0.6) last.to = p.d
-      else out.push({ from: p.d, to: p.d, level })
-    }
-    return out
-  })
-
+  // warning strip: terrain clearance + airspace incursions at the planned altitude
+  const marks = $derived([
+    ...plan.terrainConflicts.map((t) => ({ kind: 'terrain' as const, from: t.from, to: t.to, level: t.level === 'bad' ? 'warning' : 'caution', title: t.level === 'bad' ? 'Under 500 ft above terrain' : 'Under 1,000 ft above terrain', c: null as Crossing | null })),
+    ...plan.incursions.map((i) => ({ kind: 'airspace' as const, from: i.from, to: i.to, level: i.level, title: `Inside ${i.c.name}`, c: i.c })),
+  ])
   const yTicks = $derived(Array.from({ length: Math.floor(yMax / 2000) + 1 }, (_, i) => i * 2000))
 
-  // hover
-  let hover = $state<{ px: number; d: number } | null>(null)
+  // hover/touch (shared with the map through plan.hover)
+  const hoverD = $derived(plan.hover?.d ?? null)
   const hoverInfo = $derived.by(() => {
-    if (!hover || !plan.samples.length) return null
-    const s = plan.samples.reduce((a, b) => (Math.abs(b.d - hover!.d) < Math.abs(a.d - hover!.d) ? b : a))
-    const alt = plannedAlt(s.d)
+    if (hoverD == null || !plan.samples.length) return null
+    let s = plan.samples[0]
+    for (const p of plan.samples) if (Math.abs(p.d - hoverD) < Math.abs(s.d - hoverD)) s = p
+    const alt = plan.altAt(s.d)
     const inside = plan.airspace.filter((c) => s.d >= c.from && s.d <= c.to && (showE || !c.kind.startsWith('E')))
-    return { s, alt, clr: alt - s.max, inside }
-  })
-  $effect(() => {
-    const src = mapRef.map?.getSource('route-hover') as GeoJSONSource | undefined
-    if (!mapRef.map) return
-    if (!src && mapRef.map.isStyleLoaded()) {
-      mapRef.map.addSource('route-hover', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-      mapRef.map.addLayer({ id: 'route-hover', type: 'circle', source: 'route-hover', paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-stroke-color': '#d4148c', 'circle-stroke-width': 3 } })
-    }
-    const s = hoverInfo?.s
-    ;(mapRef.map.getSource('route-hover') as GeoJSONSource | undefined)?.setData(
-      s ? { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [s.lon, s.lat] } } : { type: 'FeatureCollection', features: [] },
-    )
-  })
-  onDestroy(() => {
-    ;(mapRef.map?.getSource('route-hover') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] })
+    const atAlt = inside.filter((c) => {
+      const floor = c.lo_agl ? s.elev + c.lo : c.lo
+      return alt >= floor && alt <= c.hi
+    })
+    return { s, alt, clr: alt - s.max, inside, atAlt }
   })
 
-  // drag the cruise line
   let dragging = false
-  let svg = $state<SVGSVGElement>()!
-  function svgY(e: PointerEvent) {
-    const r = svg.getBoundingClientRect()
-    return e.clientY - r.top
+  let moved = false
+  let svg = $state<SVGSVGElement>()
+  const local = (e: PointerEvent) => {
+    const r = svg!.getBoundingClientRect()
+    return { px: e.clientX - r.left, py: e.clientY - r.top }
   }
   function down(e: PointerEvent) {
-    const yy = svgY(e)
-    if (Math.abs(yy - y(route.cruise)) < 10) {
+    const { py } = local(e)
+    moved = false
+    if (Math.abs(py - y(route.cruise)) < 12) {
       dragging = true
-      svg.setPointerCapture(e.pointerId)
+      svg!.setPointerCapture(e.pointerId)
     }
+    move(e)
   }
   function move(e: PointerEvent) {
-    const r = svg.getBoundingClientRect()
-    const px = e.clientX - r.left
-    hover = px >= PAD.l && px <= width - PAD.r ? { px, d: dAt(px) } : null
+    const { px, py } = local(e)
+    if (px >= PAD.l && px <= width - PAD.r) plan.hover = { d: dAt(px), from: 'profile' }
     if (dragging) {
-      const ft = (1 - (svgY(e) - PAD.t) / (H - PAD.t - PAD.b)) * yMax
-      route.cruise = Math.max(500, Math.round(ft / 500) * 500)
+      moved = true
+      const ft = (1 - (py - PAD.t) / (H - PAD.t - PAD.b)) * yMax
+      route.cruise = Math.max(500, Math.min(45000, Math.round(ft / 500) * 500))
     }
   }
-  function up() {
+  function up(e: PointerEvent) {
+    const wasDrag = dragging && moved
     dragging = false
+    if (wasDrag) return
+    // a tap: pick the topmost volume under the finger, or a warning in the strip
+    const { px, py } = local(e)
+    const d = dAt(px)
+    if (py < PAD.t) {
+      const m = marks.find((m) => d >= m.from - total * 0.01 && d <= m.to + total * 0.01)
+      if (m?.c) plan.picked = m.c
+      return
+    }
+    const ft = (1 - (py - PAD.t) / (H - PAD.t - PAD.b)) * yMax
+    const hit = [...volumes].reverse().find((v) => {
+      if (d < v.c.from || d > v.c.to) return false
+      const s = plan.samples.find((x) => x.d >= d) ?? plan.samples[plan.samples.length - 1]
+      const floor = v.c.lo_agl ? (s?.elev ?? 0) + v.c.lo : v.c.lo
+      return ft >= floor && ft <= v.c.hi
+    })
+    plan.picked = hit?.c ?? null
+  }
+  function leave(e: PointerEvent) {
+    if (e.pointerType === 'mouse' && plan.hover?.from === 'profile') plan.hover = null
   }
 </script>
 
@@ -203,21 +194,21 @@
         <div class="legend">
           <span><i class="sw terrain"></i>Terrain</span>
           <span><i class="sw corridor"></i>Highest within 1 NM</span>
-          <span><i class="sw plan"></i>Planned (drag to change)</span>
-          {#if freezing.length}<span><Snowflake size={12} /> Freezing level</span>{/if}
+          <span><i class="sw plan"></i>Planned (drag)</span>
+          {#if freezing.length}<span><Snowflake size={12} /> 0°C</span>{/if}
           <label><input type="checkbox" bind:checked={showE} /> Class E</label>
         </div>
-        {#if conflicts.length}
-          <span class="alert" class:bad={conflicts.some((c) => c.level === 'bad')}>
-            {conflicts.some((c) => c.level === 'bad') ? 'Under 500 ft terrain clearance' : 'Under 1,000 ft terrain clearance'}
-          </span>
+        {#if marks.some((m) => m.level === 'warning')}
+          <span class="alert bad"><OctagonAlert size={12} /> {marks.filter((m) => m.level === 'warning').length} warning{marks.filter((m) => m.level === 'warning').length > 1 ? 's' : ''}</span>
+        {:else if marks.some((m) => m.level === 'caution')}
+          <span class="alert"><TriangleAlert size={12} /> {marks.filter((m) => m.level === 'caution').length} caution{marks.filter((m) => m.level === 'caution').length > 1 ? 's' : ''}</span>
         {/if}
         {#if plan.loading}<span class="faint">Updating…</span>{/if}
       {/if}
     </header>
     {#if app.profileOpen}
       <div class="chart" bind:clientWidth={width}>
-        <svg bind:this={svg} {width} height={H} onpointerdown={down} onpointermove={move} onpointerup={up} onpointerleave={() => (hover = null)} role="img" aria-label="Vertical profile">
+        <svg bind:this={svg} {width} height={H} onpointerdown={down} onpointermove={move} onpointerup={up} onpointerleave={leave} role="img" aria-label="Vertical profile">
           <defs>
             <linearGradient id="terr" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stop-color="#b59a76" />
@@ -230,9 +221,9 @@
           {/each}
 
           {#each volumes as v}
-            <path d={v.d} fill={v.st.color} fill-opacity={v.st.fill} stroke={v.st.color} stroke-width="1.3" stroke-dasharray={v.st.dash ?? ''} />
+            <path d={v.d} fill={v.st.color} fill-opacity={plan.picked === v.c ? v.st.fill + 0.2 : v.st.fill} stroke={v.st.color} stroke-width={plan.picked === v.c ? 2.6 : 1.3} stroke-dasharray={v.st.dash ?? ''} class="vol-shape" />
             {#if v.wide}
-              <text x={v.cx} y={Math.max(y(Math.min(v.hi, yMax)) + 13, PAD.t + 12)} class="vol" fill={v.st.color} text-anchor="middle">{v.label}</text>
+              <text x={v.cx} y={Math.max(y(Math.min(v.c.hi, yMax)) + 13, PAD.t + 12)} class="vol" fill={v.st.color} text-anchor="middle">{v.label}</text>
             {/if}
           {/each}
 
@@ -240,15 +231,28 @@
           <path d={corridorPath} fill="none" stroke="#8a6d48" stroke-width="1" stroke-dasharray="2 2" />
 
           {#each plan.obstacles as o}
-            <g transform={`translate(${x(o.d)},${y(o.msl)})`}>
-              <path d="M-4,0 L0,-9 L4,0" class="obst" />
-            </g>
+            <path d={`M${x(o.d) - 4},${y(o.msl) + 9} L${x(o.d)},${y(o.msl)} L${x(o.d) + 4},${y(o.msl) + 9}`} class="obst" />
           {/each}
 
           {#if freezePath}<path d={freezePath} fill="none" stroke="#3a8fd6" stroke-width="1.6" stroke-dasharray="6 4" />{/if}
 
-          {#each conflicts as c}
-            <rect x={x(c.from) - 1} width={Math.max(3, x(c.to) - x(c.from) + 2)} y={PAD.t} height={H - PAD.t - PAD.b} fill={c.level === 'bad' ? 'var(--bad)' : 'var(--warn)'} opacity="0.12" />
+          <!-- warning strip -->
+          <rect x={PAD.l} y={4} width={plotW} height={STRIP - 6} rx="3" class="strip" />
+          {#each marks as m}
+            <rect
+              x={x(m.from) - 2}
+              y={4}
+              width={Math.max(6, x(m.to) - x(m.from) + 4)}
+              height={STRIP - 6}
+              rx="3"
+              class={`mark ${m.level}`}
+              class:picked={m.c && plan.picked === m.c}
+            ><title>{m.title}</title></rect>
+            {#if m.kind === 'terrain'}
+              <rect x={x(m.from) - 1} width={Math.max(3, x(m.to) - x(m.from) + 2)} y={PAD.t} height={H - PAD.t - PAD.b} fill={m.level === 'warning' ? 'var(--bad)' : 'var(--warn)'} opacity="0.1" />
+            {:else}
+              <line x1={x(m.from)} x2={x(m.to)} y1={y(plan.altAt((m.from + m.to) / 2))} y2={y(plan.altAt((m.from + m.to) / 2))} stroke={m.level === 'warning' ? 'var(--bad)' : m.level === 'caution' ? 'var(--warn)' : 'var(--blue)'} stroke-width="9" stroke-linecap="round" opacity="0.35" />
+            {/if}
           {/each}
 
           <path d={altPath} fill="none" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" opacity="0.9" />
@@ -262,16 +266,37 @@
           {/each}
 
           {#if hoverInfo}
-            <line x1={hover!.px} x2={hover!.px} y1={PAD.t} y2={H - PAD.b} class="cross" />
-            <circle cx={x(hoverInfo.s.d)} cy={y(hoverInfo.alt)} r="4" fill="var(--accent)" />
+            <line x1={x(hoverInfo.s.d)} x2={x(hoverInfo.s.d)} y1={PAD.t} y2={H - PAD.b} class="cross" />
+            <circle cx={x(hoverInfo.s.d)} cy={y(hoverInfo.alt)} r="5" fill="var(--accent)" stroke="white" stroke-width="2" />
           {/if}
         </svg>
-        {#if hoverInfo}
-          <div class="tip glass" style:left={`${Math.min(hover!.px + 12, width - 230)}px`}>
+
+        {#if hoverInfo && !plan.picked}
+          <div class="tip glass" style:left={`${Math.min(x(hoverInfo.s.d) + 12, width - 240)}px`}>
             <div class="num"><b>{hoverInfo.s.d.toFixed(1)} NM</b> · planned {Math.round(hoverInfo.alt).toLocaleString()} ft</div>
             <div class="num">Terrain {Math.round(hoverInfo.s.elev).toLocaleString()} ft · highest nearby {Math.round(hoverInfo.s.max).toLocaleString()} ft</div>
             <div class="num" class:bad={hoverInfo.clr < 500} class:warn={hoverInfo.clr >= 500 && hoverInfo.clr < 1000}>Clearance {Math.round(hoverInfo.clr).toLocaleString()} ft</div>
-            {#each hoverInfo.inside as c}<div class="faint">{c.name} · {c.lo_agl ? `${c.lo} AGL` : c.lo === 0 ? 'SFC' : c.lo.toLocaleString()}–{c.hi >= 99999 ? 'UNL' : c.hi.toLocaleString()}</div>{/each}
+            {#each hoverInfo.inside as c}<div class:in={hoverInfo.atAlt.includes(c)} class="faint">{hoverInfo.atAlt.includes(c) ? '● ' : ''}{c.name} · {rangeText(c)}</div>{/each}
+          </div>
+        {/if}
+
+        {#if plan.picked}
+          {@const c = plan.picked}
+          {@const inc = plan.incursions.filter((i) => i.c === c)}
+          <div class="picked glass" style:left={`${Math.min(Math.max(x(c.from), PAD.l), width - 300)}px`}>
+            <div class="ph">
+              <b>{c.name}</b>
+              <button class="btn ghost x" onclick={() => (plan.picked = null)} aria-label="Close"><X size={14} /></button>
+            </div>
+            <div class="num">{rangeText(c)}{c.lo_agl ? '' : ' MSL'}</div>
+            <div class="faint num">Route inside from {c.from.toFixed(1)} to {c.to.toFixed(1)} NM</div>
+            {#if c.times}<div class="faint">Times: {c.times}</div>{/if}
+            {#if inc.length}
+              <div class="incl" class:bad={inc[0].level === 'warning'}>Your planned altitude is inside it from {inc[0].from.toFixed(1)} to {inc[inc.length - 1].to.toFixed(1)} NM</div>
+            {:else}
+              <div class="ok">Your planned altitude stays outside it</div>
+            {/if}
+            <div class="faint small">Highlighted on the map</div>
           </div>
         {/if}
       </div>
@@ -295,7 +320,7 @@
     display: flex;
     align-items: center;
     gap: 14px;
-    height: 30px;
+    min-height: 30px;
     flex-wrap: wrap;
   }
   .title {
@@ -339,6 +364,9 @@
     height: 3px;
   }
   .alert {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
     font-size: 11px;
     font-weight: 650;
     color: var(--warn);
@@ -357,6 +385,7 @@
     display: block;
     touch-action: none;
     user-select: none;
+    -webkit-user-select: none;
   }
   .grid {
     stroke: var(--line);
@@ -368,15 +397,39 @@
   .vol {
     font-size: 10px;
     font-weight: 700;
+    pointer-events: none;
+  }
+  .vol-shape {
+    cursor: pointer;
   }
   .obst {
     fill: none;
     stroke: var(--text);
     stroke-width: 1.4;
   }
+  .strip {
+    fill: var(--surface-2);
+  }
+  .mark {
+    cursor: pointer;
+  }
+  .mark.warning {
+    fill: var(--bad);
+  }
+  .mark.caution {
+    fill: var(--warn);
+  }
+  .mark.info {
+    fill: var(--blue);
+    opacity: 0.6;
+  }
+  .mark.picked {
+    stroke: var(--text);
+    stroke-width: 2;
+  }
   .grab {
     stroke: transparent;
-    stroke-width: 14;
+    stroke-width: 18;
     cursor: ns-resize;
   }
   .cruise {
@@ -386,6 +439,7 @@
     paint-order: stroke;
     stroke: var(--surface-solid);
     stroke-width: 3px;
+    pointer-events: none;
   }
   .wpline {
     stroke: var(--line-strong);
@@ -397,26 +451,61 @@
     fill: var(--text-2);
   }
   .cross {
-    stroke: var(--text-2);
-    stroke-width: 1;
+    stroke: var(--accent);
+    stroke-width: 1.2;
+    pointer-events: none;
   }
-  .tip {
+  .tip,
+  .picked {
     position: absolute;
-    top: 8px;
+    top: 26px;
     padding: 8px 10px;
     font-size: 11.5px;
-    pointer-events: none;
-    width: 218px;
+    width: 228px;
     border-radius: 10px;
     line-height: 1.5;
   }
+  .tip {
+    pointer-events: none;
+  }
+  .picked {
+    width: 288px;
+  }
+  .ph {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+  }
+  .x {
+    height: 24px;
+    width: 24px;
+    padding: 0;
+    justify-content: center;
+  }
+  .in {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .incl {
+    color: var(--warn);
+    font-weight: 650;
+  }
+  .incl.bad,
   .bad {
     color: var(--bad);
     font-weight: 650;
   }
+  .ok {
+    color: var(--ok);
+    font-weight: 600;
+  }
   .warn {
     color: var(--warn);
     font-weight: 650;
+  }
+  .small {
+    font-size: 10.5px;
   }
   @media (max-width: 640px) {
     .drawer {

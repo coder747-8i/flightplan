@@ -22,9 +22,13 @@
   function install() {
     if (!map || map.getSource('route')) return
     const p = app.theme === 'night' ? NIGHT : DAY
+    const before = map.getLayer('apt-heli') ? 'apt-heli' : undefined
     map.addSource('route', { type: 'geojson', data: empty })
     map.addSource('route-drag', { type: 'geojson', data: empty })
-    const before = map.getLayer('apt-heli') ? 'apt-heli' : undefined
+    map.addSource('route-hover', { type: 'geojson', data: empty })
+    map.addSource('as-pick', { type: 'geojson', data: empty })
+    map.addLayer({ id: 'as-pick-fill', type: 'fill', source: 'as-pick', paint: { 'fill-color': p.route, 'fill-opacity': 0.12 } }, before)
+    map.addLayer({ id: 'as-pick-line', type: 'line', source: 'as-pick', paint: { 'line-color': p.route, 'line-width': 3, 'line-dasharray': [2, 1] } }, before)
     map.addLayer({ id: 'route-casing', type: 'line', source: 'route', filter: ['==', ['get', 't'], 'line'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.85 } }, before)
     map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['==', ['get', 't'], 'line'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': p.route, 'line-width': 4 } }, before)
     map.addLayer({ id: 'route-drag-line', type: 'line', source: 'route-drag', paint: { 'line-color': p.route, 'line-width': 3, 'line-dasharray': [2, 1.5], 'line-opacity': 0.8 } })
@@ -54,8 +58,52 @@
       layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 12, 'text-anchor': 'left', 'text-offset': [1, 0], 'text-allow-overlap': true },
       paint: { 'text-color': '#ffffff', 'text-halo-color': p.route, 'text-halo-width': 3 },
     })
+    map.addLayer({ id: 'route-hover', type: 'circle', source: 'route-hover', paint: { 'circle-radius': 8, 'circle-color': '#ffffff', 'circle-stroke-color': p.route, 'circle-stroke-width': 3.5 } })
     ready++
   }
+
+  // along-track distance of the profile sample nearest a map position
+  function alongTrack(lng: number, lat: number) {
+    let best = null as null | { d: number; e: number }
+    const k = Math.cos((lat * Math.PI) / 180)
+    for (const s of plan.samples) {
+      const e = (s.lat - lat) ** 2 + ((s.lon - lng) * k) ** 2
+      if (!best || e < best.e) best = { d: s.d, e }
+    }
+    return best?.d ?? null
+  }
+
+  // hover marker, shared with the profile
+  $effect(() => {
+    ready
+    const h = plan.hover
+    let fc: GeoJSON.FeatureCollection | GeoJSON.Feature = empty
+    if (h && plan.samples.length) {
+      let s = plan.samples[0]
+      for (const x of plan.samples) if (Math.abs(x.d - h.d) < Math.abs(s.d - h.d)) s = x
+      fc = { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [s.lon, s.lat] } }
+    }
+    ;(map?.getSource('route-hover') as GeoJSONSource | undefined)?.setData(fc)
+  })
+
+  // airspace picked in the profile: outline it and bring it into view
+  $effect(() => {
+    ready
+    const c = plan.picked
+    const src = map?.getSource('as-pick') as GeoJSONSource | undefined
+    if (!src) return
+    if (!c?.geom?.length) {
+      src.setData(empty)
+      return
+    }
+    src.setData({ type: 'Feature', properties: {}, geometry: { type: 'MultiPolygon', coordinates: c.geom } })
+    const pts = c.geom.flatMap((poly) => poly[0] ?? [])
+    if (pts.length) {
+      const lons = pts.map((p) => p[0])
+      const lats = pts.map((p) => p[1])
+      map!.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: { top: 80, left: 120, right: 80, bottom: app.profileOpen ? 320 : 80 }, maxZoom: 11, duration: 600 })
+    }
+  })
 
   function features(): GeoJSON.FeatureCollection {
     const w = route.waypoints
@@ -199,16 +247,37 @@
       map.on('mouseenter', 'route-node', () => (map!.getCanvas().style.cursor = 'grab'))
       map.on('mouseleave', 'route-node', () => (map!.getCanvas().style.cursor = ''))
       map.on('mouseenter', 'route-line', () => (map!.getCanvas().style.cursor = 'copy'))
-      map.on('mouseleave', 'route-line', () => (map!.getCanvas().style.cursor = ''))
+      map.on('mouseleave', 'route-line', () => {
+        map!.getCanvas().style.cursor = ''
+        if (plan.hover?.from === 'map') plan.hover = null
+      })
+      map.on('mousemove', 'route-line', (e) => {
+        if (drag) return
+        const d = alongTrack(e.lngLat.lng, e.lngLat.lat)
+        if (d != null) plan.hover = { d, from: 'map' }
+      })
 
       mapRef.onMapClick = (e: MapMouseEvent) => {
         if (mapRef.suppressClick) {
           mapRef.suppressClick = false
           return true
         }
-        if (!route.editing) return false
-        route.add(snap(e))
-        return true
+        if (route.editing) {
+          route.add(snap(e))
+          return true
+        }
+        // a tap on the route line (touch screens have no hover) marks that spot on the profile
+        const r = 10
+        const onLine = map!.queryRenderedFeatures([[e.point.x - r, e.point.y - r], [e.point.x + r, e.point.y + r]], { layers: ['route-line'] }).length
+        if (onLine) {
+          const d = alongTrack(e.lngLat.lng, e.lngLat.lat)
+          if (d != null) {
+            plan.hover = { d, from: 'map' }
+            app.profileOpen = true
+            return true
+          }
+        }
+        return false
       }
     }, 50)
     return () => clearInterval(wait)

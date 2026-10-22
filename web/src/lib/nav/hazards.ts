@@ -7,6 +7,7 @@ import type { Crossing } from '../stores/plan.svelte'
 import type { Waypoint } from '../stores/route.svelte'
 import type { NavLog } from './navlog'
 import { sunTimes } from './sun'
+import { describeSigmet, decodeMetar } from '../wx/decode'
 
 export type Level = 'warning' | 'caution' | 'info'
 export interface Hazard {
@@ -158,8 +159,7 @@ export function analyze(h: HazardInput): Hazard[] {
     const t = etaAt(s.d)
     if (sg.validTimeTo && sg.validTimeTo < Math.min(t, now)) continue
     const sev = sg.airSigmetType === 'SIGMET' || sg.hazard === 'CONVECTIVE'
-    const alts = sg.altitudeHi1 ? ` up to ${fmtAlt(sg.altitudeHi1)}` : ''
-    out.push({ level: sev ? 'warning' : 'caution', category: 'Weather', title: sg.hazard === 'CONVECTIVE' ? 'Convective SIGMET on your route' : `${sg.airSigmetType} for ${String(sg.hazard).toLowerCase()} on your route`, detail: `${alts ? cap(alts.trim()) + '. ' : ''}${(sg.rawAirSigmet ?? '').split('\n').slice(0, 3).join(' ').slice(0, 220)}`, at: s.d })
+    out.push({ level: sev ? 'warning' : 'caution', category: 'Weather', title: sg.hazard === 'CONVECTIVE' ? 'Convective SIGMET on your route' : `${sg.airSigmetType} for ${String(sg.hazard).toLowerCase()} on your route`, detail: describeSigmet(sg).summary.slice(1).join('. ') + '.', at: s.d })
   }
   const gHits = new Map<string, number>()
   for (const g of h.gairmets) {
@@ -182,8 +182,9 @@ export function analyze(h: HazardInput): Hazard[] {
     const m = h.metars[id]
     if (!m) return
     const where = i === 0 ? 'Departure' : 'Destination'
-    if (m.fltCat === 'IFR' || m.fltCat === 'LIFR') out.push({ level: 'warning', category: 'Weather', title: `${where} ${id} is ${m.fltCat}`, detail: m.rawOb })
-    else if (m.fltCat === 'MVFR') out.push({ level: 'caution', category: 'Weather', title: `${where} ${id} is marginal VFR`, detail: m.rawOb })
+    const plainWx = decodeMetar(m.rawOb).filter((l) => /^(Visibility|Broken|Overcast|Sky|Wind)/.test(l) || /rain|snow|fog|mist|thunder|drizzle|haze|smoke/i.test(l)).join('. ')
+    if (m.fltCat === 'IFR' || m.fltCat === 'LIFR') out.push({ level: 'warning', category: 'Weather', title: `${where} ${id} is ${m.fltCat}`, detail: plainWx })
+    else if (m.fltCat === 'MVFR') out.push({ level: 'caution', category: 'Weather', title: `${where} ${id} is marginal VFR`, detail: plainWx })
     // crosswind
     const rwys = h.runways[w.id] ?? []
     if (m.wspd && typeof m.wdir === 'number' && rwys.length && h.aircraft) {

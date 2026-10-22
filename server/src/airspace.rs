@@ -32,6 +32,8 @@ pub struct Crossing {
     /// along-track NM where the route enters / leaves
     pub from: f64,
     pub to: f64,
+    /// simplified outline for highlighting on the map
+    pub geom: Vec<Vec<Vec<[f64; 2]>>>,
 }
 
 fn in_ring(x: f64, y: f64, ring: &[[f64; 2]]) -> bool {
@@ -101,6 +103,6 @@ impl Airspace {
     }
 
     fn crossing(&self, v: &Volume, from: f64, to: f64) -> Crossing {
-        Crossing { kind: v.k.clone(), name: v.n.clone(), lo: v.lo, hi: v.hi, lo_agl: v.agl == 1, times: v.t.clone(), from, to }
+        Crossing { kind: v.k.clone(), name: v.n.clone(), lo: v.lo, hi: v.hi, lo_agl: v.agl == 1, times: v.t.clone(), from, to, geom: v.p.clone() }
     }
 }

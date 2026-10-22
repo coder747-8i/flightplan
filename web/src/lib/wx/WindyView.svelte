@@ -9,14 +9,20 @@
 
   let { open = $bindable(false), apiKey }: { open: boolean; apiKey: string } = $props()
   let status = $state('Loading Windy…')
-  let windy: any = null
+  let windy = $state.raw<any>(null)
+  // overlays/levels this Windy key actually allows (read from Windy once it loads)
+  let allowedOverlays = $state<string[] | null>(null)
+  let allowedLevels = $state<string[] | null>(null)
   let routeLine: any = null
   let overlay = $state('wind')
   let level = $state('850h')
 
   const OVERLAYS = [
-    ['wind', 'Wind'], ['gust', 'Gusts'], ['rain', 'Rain, thunder'], ['clouds', 'Clouds'], ['cbase', 'Cloud base'],
-    ['visibility', 'Visibility'], ['temp', 'Temperature'], ['radar', 'Radar'], ['satellite', 'Satellite'], ['cape', 'CAPE'], ['icing', 'Icing'],
+    ['wind', 'Wind'], ['gust', 'Gusts'], ['rain', 'Rain, thunder'], ['clouds', 'Clouds'], ['lclouds', 'Low clouds'],
+    ['mclouds', 'Medium clouds'], ['hclouds', 'High clouds'], ['cbase', 'Cloud base'], ['visibility', 'Visibility'],
+    ['temp', 'Temperature'], ['dewpoint', 'Dew point'], ['rh', 'Humidity'], ['pressure', 'Pressure'], ['cape', 'CAPE (storms)'],
+    ['rainAccu', 'Rain accumulation'], ['snowAccu', 'Snow accumulation'], ['snowcover', 'Snow depth'], ['thunder', 'Thunderstorms'],
+    ['radar', 'Radar'], ['satellite', 'Satellite'], ['icing', 'Icing'], ['turbulence', 'Turbulence'], ['ccl', 'Thermals'],
   ] as const
   const LEVELS = [['surface', 'Surface'], ['950h', '2,000 ft'], ['900h', '3,000 ft'], ['850h', '5,000 ft'], ['800h', '6,400 ft'], ['700h', '10,000 ft'], ['600h', '14,000 ft'], ['500h', 'FL180'], ['300h', 'FL300']] as const
 
@@ -63,11 +69,21 @@
     route.waypoints
     drawRoute()
   })
+  // read the selections before the guard so the effect re-runs whenever they change
   $effect(() => {
+    const o = overlay
+    const l = level
     if (!windy) return
-    windy.store.set('overlay', overlay)
-    windy.store.set('level', level)
+    if (windy.store.get('overlay') !== o) windy.store.set('overlay', o)
+    if (windy.store.get('level') !== l) windy.store.set('level', l)
   })
+
+  const NAMES: Record<string, string> = Object.fromEntries(OVERLAYS)
+  const overlayOptions = $derived(
+    allowedOverlays ? allowedOverlays.map((v) => [v, NAMES[v] ?? v.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())] as const) : OVERLAYS.map((o) => [o[0], o[1]] as const),
+  )
+  const LEVEL_NAMES: Record<string, string> = Object.fromEntries(LEVELS)
+  const levelOptions = $derived(allowedLevels ? allowedLevels.map((v) => [v, LEVEL_NAMES[v] ?? v] as const) : LEVELS.map((l) => [l[0], l[1]] as const))
   $effect(() => {
     if (open && windy) {
       const c = mapRef.map?.getCenter()
@@ -85,8 +101,8 @@
   <div id="windy"></div>
   <div class="bar glass">
     <b>Windy</b>
-    <select class="field" bind:value={overlay}>{#each OVERLAYS as [v, l]}<option value={v}>{l}</option>{/each}</select>
-    <select class="field" bind:value={level}>{#each LEVELS as [v, l]}<option value={v}>{l}</option>{/each}</select>
+    <select class="field" bind:value={overlay}>{#each overlayOptions as [v, l]}<option value={v}>{l}</option>{/each}</select>
+    <select class="field" bind:value={level}>{#each levelOptions as [v, l]}<option value={v}>{l}</option>{/each}</select>
     <button class="btn" onclick={() => (open = false)}><X size={15} /> Back to chart</button>
   </div>
   {#if status}<div class="status glass">{status}</div>{/if}

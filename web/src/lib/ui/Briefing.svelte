@@ -13,6 +13,7 @@
   import { mapRef } from '../chart/mapRef'
   import HazardList from './HazardList.svelte'
   import WBChart from './WBChart.svelte'
+  import WxText from '../wx/WxText.svelte'
 
   const log = $derived(plan.log)
   const ac = $derived(aircraft.active)
@@ -193,8 +194,8 @@
               {#if r.metar}<span class="faint small">{fmtAge(r.metar.obsTime)}</span>{/if}
               <a class="small" href={notamUrl(r.id)} target="_blank" rel="noopener noreferrer">NOTAMs ↗</a>
             </div>
-            <pre>{r.metar?.rawOb ?? 'No METAR'}</pre>
-            {#if r.taf}<pre class="taf">{r.taf.rawTAF.replace(/ (FM|BECMG|TEMPO|PROB)/g, '\n  $1')}</pre>{/if}
+            {#if r.metar}<WxText kind="metar" raw={r.metar.rawOb} />{:else}<p class="faint">No METAR</p>{/if}
+            {#if r.taf}<div class="tafw"><WxText kind="taf" raw={r.taf.rawTAF} /></div>{/if}
           </div>
         {/each}
       </section>
@@ -393,14 +394,8 @@
     padding: 1px 6px;
     border-radius: 5px;
   }
-  pre {
-    font-family: var(--mono);
-    font-size: 12px;
-    white-space: pre-wrap;
-    margin: 4px 0 0;
-  }
-  .taf {
-    color: var(--text-2);
+  .tafw {
+    margin-top: 6px;
   }
   .two {
     display: grid;

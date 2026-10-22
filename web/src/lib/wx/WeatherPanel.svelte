@@ -7,11 +7,13 @@
   import { app } from '../stores/app.svelte'
   import { wx } from './WeatherLayer.svelte'
   import { fltCatColor, fmtAge } from './format'
+  import WxText from './WxText.svelte'
 
   let { windyAvailable, onWindy }: { windyAvailable: boolean; onWindy: () => void } = $props()
 
   let routeWx = $state<{ id: string; metar: any; taf: any }[]>([])
   let loading = $state(false)
+  let showAllSig = $state(false)
 
   async function loadRouteWx() {
     const ids = route.waypoints.filter((w) => w.kind === 'airport').map((w) => (w.id.length === 3 ? `K${w.id}` : w.id))
@@ -62,6 +64,16 @@
   {/if}
   <Toggle bind:checked={wx.show.pireps} label="PIREPs" hint="Last 3 hours; blue icing, orange turbulence" swatch="#d48a0b" />
 
+  {#if activeSig.length}
+    <div class="section-title">AIRMETs & SIGMETs in effect</div>
+    {#each activeSig.slice(0, showAllSig ? 99 : 4) as sg}
+      <div class="adv">
+        <WxText kind="sigmet" data={sg} compact />
+      </div>
+    {/each}
+    {#if activeSig.length > 4}<button class="more" onclick={() => (showAllSig = !showAllSig)}>{showAllSig ? 'Show fewer' : `Show all ${activeSig.length}`}</button>{/if}
+  {/if}
+
   <div class="section-title row">
     <span>Along your route</span>
     <button class="btn ghost tiny" onclick={loadRouteWx} title="Refresh"><RefreshCw size={13} class={loading ? 'spin' : ''} /></button>
@@ -76,8 +88,8 @@
         {#if r.metar?.fltCat}<span class="cat" style:background={fltCatColor(r.metar.fltCat)}>{r.metar.fltCat}</span>{/if}
         {#if r.metar}<span class="faint">{fmtAge(r.metar.obsTime)}</span>{/if}
       </div>
-      {#if r.metar}<pre>{r.metar.rawOb}</pre>{:else}<p class="faint small">No METAR</p>{/if}
-      {#if r.taf}<pre class="taf">{r.taf.rawTAF.replace(/ (FM|BECMG|TEMPO|PROB)/g, '\n  $1')}</pre>{/if}
+      {#if r.metar}<WxText kind="metar" raw={r.metar.rawOb} />{:else}<p class="faint small">No METAR</p>{/if}
+      {#if r.taf}<div class="tafw"><WxText kind="taf" raw={r.taf.rawTAF} /></div>{/if}
     </div>
   {/each}
   <p class="faint small src">Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet. Check an official briefing (1800wxbrief) before flight.</p>
@@ -188,16 +200,22 @@
     padding: 1px 6px;
     border-radius: 5px;
   }
-  pre {
-    margin: 0;
-    white-space: pre-wrap;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    line-height: 1.45;
+  .adv {
+    padding: 8px 10px;
+    border-radius: 9px;
+    background: var(--surface-2);
+    margin-bottom: 6px;
   }
-  .taf {
-    color: var(--text-2);
-    margin-top: 4px;
+  .more {
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 0 6px;
+  }
+  .tafw {
+    margin-top: 6px;
   }
   .small {
     font-size: 11px;

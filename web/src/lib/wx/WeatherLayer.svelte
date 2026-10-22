@@ -133,7 +133,7 @@
   $effect(() => {
     ready
     const feats: GeoJSON.Feature[] = []
-    for (const s of wx.sigmets) {
+    for (const [idx, s] of wx.sigmets.entries()) {
       if (!s.coords?.length) continue
       const r = ring(s.coords)
       if (r.length < 3) continue
@@ -142,7 +142,7 @@
       const bot = s.altitudeLow1 ? `${s.altitudeLow1}` : 'SFC'
       feats.push({
         type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...r, r[0]]] },
-        properties: { color, label: `${s.airSigmetType} ${s.hazard}${top ? ` ${bot}–${top}` : ''}`, raw: s.rawAirSigmet, kind: 'sigmet' },
+        properties: { color, idx, label: `${s.airSigmetType} ${s.hazard}${top ? ` ${bot}–${top}` : ''}`, raw: s.rawAirSigmet, kind: 'sigmet' },
       })
     }
     setData('wx-sigmet', { type: 'FeatureCollection', features: feats })
@@ -152,13 +152,13 @@
     const feats: GeoJSON.Feature[] = []
     const hours = [...new Set(wx.gairmets.map((g) => g.forecastHour))].sort((a, b) => a - b)
     const hr = hours.includes(wx.gairmetHour) ? wx.gairmetHour : hours[0]
-    for (const g of wx.gairmets) {
+    for (const [idx, g] of wx.gairmets.entries()) {
       if (g.forecastHour !== hr || !g.coords?.length) continue
       const r = ring(g.coords)
       const color = HAZARD_COLOR[g.hazard] ?? '#888'
       const label = g.hazard === 'FZLVL' || g.hazard === 'M_FZLVL' ? `0°C ${g.level ? +g.level * 100 : ''}` : `${g.hazard.replace('_', ' ')}${g.top ? ` ${g.base ?? 'SFC'}–${g.top}` : ''}`
-      if (g.geometryType === 'LINE' || g.geom === 'LINE') feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: r }, properties: { color, label } })
-      else if (r.length >= 3) feats.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...r, r[0]]] }, properties: { color, label } })
+      if (g.geometryType === 'LINE' || g.geom === 'LINE') feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: r }, properties: { color, label, idx } })
+      else if (r.length >= 3) feats.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...r, r[0]]] }, properties: { color, label, idx } })
     }
     setData('wx-gairmet', { type: 'FeatureCollection', features: feats })
   })

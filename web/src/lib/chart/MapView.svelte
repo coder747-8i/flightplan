@@ -11,6 +11,7 @@
   import { DAY, NIGHT } from './palette'
   import { AIRSPACE_FILTERS, LAYER_GROUPS, altitudeFilter, buildStyle, type LayerGroup } from './style'
   import { mapRef } from './mapRef'
+  import { wx } from '../wx/WeatherLayer.svelte'
 
   let container: HTMLDivElement
   let map: maplibregl.Map | undefined = $state()
@@ -60,13 +61,13 @@
       } else if (f.source === 'wx-tfr') {
         item = { type: 'airspace', title: `TFR ${pr.notam} · ${pr.type ?? pr.legal ?? ''}`, subtitle: pr.title || pr.description || '', color: '#d23a3a' }
       } else if (f.source === 'wx-sigmet') {
-        item = { type: 'airspace', title: pr.label, subtitle: (pr.raw || '').slice(0, 220), color: pr.color }
+        item = { type: 'airspace', title: pr.label, subtitle: '', color: pr.color, decode: { kind: 'sigmet', data: wx.sigmets[pr.idx], raw: pr.raw } }
       } else if (f.source === 'wx-gairmet') {
-        item = { type: 'airspace', title: `G-AIRMET ${pr.label}`, subtitle: '', color: pr.color }
+        item = { type: 'airspace', title: `G-AIRMET ${pr.label}`, subtitle: '', color: pr.color, decode: wx.gairmets[pr.idx] ? { kind: 'gairmet', data: wx.gairmets[pr.idx] } : undefined }
       } else if (f.source === 'wx-metar') {
-        item = { type: 'airport', id: pr.id, title: `${pr.id} ${pr.cat}`, subtitle: pr.raw, color: pr.color }
+        item = { type: 'airport', id: pr.id, title: `${pr.id} ${pr.cat}`, subtitle: '', color: pr.color, decode: { kind: 'metar', raw: pr.raw } }
       } else if (f.source === 'wx-pirep') {
-        item = { type: 'obstacle', title: `PIREP ${pr.label}`, subtitle: pr.raw, color: pr.color }
+        item = { type: 'obstacle', title: `PIREP ${pr.label}`, subtitle: '', color: pr.color, decode: { kind: 'pirep', raw: pr.raw } }
       } else if (f.sourceLayer === 'obstacles') {
         item = { type: 'obstacle', title: `${pr.type} ${pr.msl} ft MSL`, subtitle: `${pr.agl} ft AGL${pr.lit ? ' · lighted' : ''}`, color: p.obstacle }
       }

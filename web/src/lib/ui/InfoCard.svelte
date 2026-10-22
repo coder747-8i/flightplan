@@ -6,6 +6,8 @@
   import { mapRef } from '../chart/mapRef'
   import { fltCatColor, fmtAge } from '../wx/format'
   import FboList from './FboList.svelte'
+  import WxText from '../wx/WxText.svelte'
+  import { expand } from '../wx/decode'
 
   let tab = $state<'info' | 'runways' | 'freqs' | 'wx' | 'fbo'>('info')
   let data = $state<any>(null)
@@ -162,19 +164,19 @@
             {#each remarkGroups as g}
               <div class="section-title">{g.title}</div>
               <ul class="list remarks">
-                {#each g.items as r}<li title={r.text}>{r.plain || r.text}</li>{/each}
+                {#each g.items as r}<li title={r.text}>{app.rawWx ? r.text : expand(r.text)}</li>{/each}
               </ul>
             {/each}
           {:else if tab === 'wx'}
             {#if metar}
               <div class="section-title">METAR <span class="faint">· {fmtAge(metar.obsTime)}</span></div>
-              <pre class="raw">{metar.rawOb}</pre>
+              <WxText kind="metar" raw={metar.rawOb} />
             {:else}
               <p class="muted">No METAR for this field. Check the Weather panel for nearby stations.</p>
             {/if}
             {#if taf}
               <div class="section-title">TAF</div>
-              <pre class="raw">{taf.rawTAF.replace(/ (FM|BECMG|TEMPO|PROB)/g, '\n  $1')}</pre>
+              <WxText kind="taf" raw={taf.rawTAF} />
             {/if}
             {#if data.awos.length}
               <div class="section-title">AWOS / ASOS</div>
@@ -233,7 +235,8 @@
             <span class="bar" style:background={it.color}></span>
             <span>
               <b>{it.title}</b>
-              <small class="faint">{it.subtitle}</small>
+              {#if it.subtitle}<small class="faint">{it.subtitle}</small>{/if}
+              {#if it.decode}<WxText kind={it.decode.kind} raw={it.decode.raw} data={it.decode.data} compact />{/if}
             </span>
           </button>
         {/each}
@@ -377,16 +380,6 @@
     align-items: center;
     gap: 4px;
   }
-  .raw {
-    white-space: pre-wrap;
-    font-family: var(--mono);
-    font-size: 12px;
-    background: var(--surface-2);
-    padding: 10px;
-    border-radius: 8px;
-    margin: 0;
-    line-height: 1.5;
-  }
   .rwy {
     padding: 12px 0;
     border-bottom: 1px solid var(--line);
@@ -425,6 +418,7 @@
   }
   .item:disabled {
     cursor: default;
+    color: inherit;
   }
   .item:not(:disabled):hover {
     background: var(--surface-2);
