@@ -198,3 +198,25 @@ textarea {
   font-size: 10px;
   border-radius: 3px;
 }
+
+@media print {
+  html,
+  body,
+  #app {
+    height: auto;
+    overflow: visible;
+    background: white;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .brief,
+  .brief * {
+    visibility: visible;
+  }
+  .brief {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100%;
+  }
+}

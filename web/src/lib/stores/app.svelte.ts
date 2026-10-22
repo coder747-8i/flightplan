@@ -49,6 +49,7 @@ class AppState {
   layers = $state<Record<LayerGroup, boolean>>(load('layers', DEFAULT_LAYERS))
   altitude = $state(load('altitude', { enabled: false, lo: 0, hi: 12500 }))
   panel = $state<Panel>('none')
+  profileOpen = $state(load('prefs2', { profileOpen: true }).profileOpen)
   /** what the info card shows: an airport id, or a list of things under a map click */
   selection = $state<null | { kind: 'airport'; id: string } | { kind: 'point'; lngLat: [number, number]; items: PointItem[] }>(null)
   cursor = $state<{ lat: number; lon: number; zoom: number } | null>(null)
@@ -69,4 +70,5 @@ $effect.root(() => {
   $effect(() => save('layers', app.layers))
   $effect(() => save('altitude', app.altitude))
   $effect(() => save('prefs', { theme: app.theme }))
+  $effect(() => save('prefs2', { profileOpen: app.profileOpen }))
 })

@@ -6,7 +6,11 @@ export default defineConfig({
   // MapLibre 6 loads its worker from a sibling module; pre-bundling breaks that URL
   optimizeDeps: { exclude: ['maplibre-gl'] },
   server: {
+    // listen on all interfaces so phones/tablets on the LAN can use the dev server
+    host: '0.0.0.0',
     port: 5173,
+    allowedHosts: true,
     proxy: { '/api': 'http://127.0.0.1:8787' },
   },
+  preview: { host: '0.0.0.0', port: 4173, proxy: { '/api': 'http://127.0.0.1:8787' } },
 })

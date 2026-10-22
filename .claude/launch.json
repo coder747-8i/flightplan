@@ -4,7 +4,7 @@
     {
       "name": "web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "/home/justus/projects/flightplan/web", "run", "dev", "--", "--host", "127.0.0.1"],
+      "runtimeArgs": ["--prefix", "/home/justus/projects/flightplan/web", "run", "dev", "--", "--host", "0.0.0.0"],
       "port": 5173
     }
   ]

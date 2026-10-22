@@ -2,6 +2,8 @@
   import * as maplibregl from 'maplibre-gl'
   import type { MapGeoJSONFeature } from 'maplibre-gl'
   import 'maplibre-gl/dist/maplibre-gl.css'
+  // ship the worker as a build asset; MapLibre's own sibling-file lookup breaks once bundled
+  import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
   import { Protocol } from 'pmtiles'
   import { onMount } from 'svelte'
   import { app, type PointItem } from '../stores/app.svelte'
@@ -55,6 +57,16 @@
         item = { type: 'navaid', id: pr.id, title: `${pr.id} · ${pr.name}`, subtitle: `${pr.type} ${pr.freq}`, color: p.navaid }
       } else if (f.sourceLayer === 'fixes') {
         item = { type: 'fix', id: pr.id, title: pr.id, subtitle: pr.vfr ? 'VFR waypoint' : 'Fix', color: p.nontowered }
+      } else if (f.source === 'wx-tfr') {
+        item = { type: 'airspace', title: `TFR ${pr.notam} · ${pr.type ?? pr.legal ?? ''}`, subtitle: pr.title || pr.description || '', color: '#d23a3a' }
+      } else if (f.source === 'wx-sigmet') {
+        item = { type: 'airspace', title: pr.label, subtitle: (pr.raw || '').slice(0, 220), color: pr.color }
+      } else if (f.source === 'wx-gairmet') {
+        item = { type: 'airspace', title: `G-AIRMET ${pr.label}`, subtitle: '', color: pr.color }
+      } else if (f.source === 'wx-metar') {
+        item = { type: 'airport', id: pr.id, title: `${pr.id} ${pr.cat}`, subtitle: pr.raw, color: pr.color }
+      } else if (f.source === 'wx-pirep') {
+        item = { type: 'obstacle', title: `PIREP ${pr.label}`, subtitle: pr.raw, color: pr.color }
       } else if (f.sourceLayer === 'obstacles') {
         item = { type: 'obstacle', title: `${pr.type} ${pr.msl} ft MSL`, subtitle: `${pr.agl} ft AGL${pr.lit ? ' · lighted' : ''}`, color: p.obstacle }
       }
@@ -69,6 +81,7 @@
   }
 
   onMount(() => {
+    maplibregl.setWorkerUrl(workerUrl)
     const protocol = new Protocol()
     maplibregl.addProtocol('pmtiles', protocol.tile)
     const saved = (() => {
@@ -106,7 +119,8 @@
       if (mapRef.onMapClick?.(e)) return
       const pad = 6
       const box: [maplibregl.PointLike, maplibregl.PointLike] = [[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]]
-      const pointFeatures = map!.queryRenderedFeatures(box).filter((f) => ['airports', 'navaids', 'fixes', 'obstacles'].includes(f.sourceLayer ?? ''))
+      const pointFeatures = map!.queryRenderedFeatures(box).filter((f) => ['airports', 'navaids', 'fixes', 'obstacles'].includes(f.sourceLayer ?? '') || ['wx-metar', 'wx-pirep'].includes(f.source))
+      const wxAreas = map!.queryRenderedFeatures(e.point, { layers: ['wx-tfr-fill', 'wx-sigmet-fill', 'wx-gairmet-fill'].filter((l) => map!.getLayer(l) && map!.getLayoutProperty(l, 'visibility') !== 'none') })
       const airport = pointFeatures.find((f) => f.sourceLayer === 'airports')
       if (airport) {
         app.selection = { kind: 'airport', id: (airport.properties as any).id }
@@ -121,7 +135,7 @@
         if (!kindVisible(pr.kind, pr.lo_agl, pr.lo)) return false
         return !enabled || (pr.lo <= hi && pr.hi >= lo)
       })
-      const items = describe([...pointFeatures, ...shown] as MapGeoJSONFeature[])
+      const items = describe([...pointFeatures, ...wxAreas, ...shown] as MapGeoJSONFeature[])
       app.selection = items.length ? { kind: 'point', lngLat: [e.lngLat.lng, e.lngLat.lat], items } : null
     })
     map.getCanvas().style.cursor = 'default'

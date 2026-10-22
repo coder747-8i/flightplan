@@ -44,6 +44,17 @@
     })
   })
 
+  const GROUPS: [string, string][] = [
+    ['caution', 'Cautions'], ['ppr', 'Prior permission'], ['fuel', 'Fuel & services'], ['customs', 'Customs & fees'],
+    ['noise', 'Noise abatement'], ['pattern', 'Traffic pattern'], ['atc', 'ATC & clearance'], ['lighting', 'Lighting'],
+    ['runway', 'Runway notes'], ['other', 'Other remarks'],
+  ]
+  const remarkGroups = $derived(
+    data
+      ? GROUPS.map(([k, title]) => ({ title, items: data.remarks.filter((r: any) => (r.category || 'other') === k) })).filter((g) => g.items.length)
+      : [],
+  )
+
   function useLabel(u: string) {
     return u
       .replace('LCL/P', 'Tower').replace('LCL/S', 'Tower (sec)').replace('GND/P', 'Ground').replace('GND/S', 'Ground (sec)')
@@ -148,12 +159,12 @@
                 </div>
               {/each}
             {/if}
-            {#if data.remarks.length}
-              <div class="section-title">Remarks</div>
+            {#each remarkGroups as g}
+              <div class="section-title">{g.title}</div>
               <ul class="list remarks">
-                {#each data.remarks.slice(0, 40) as r}<li>{r.text}</li>{/each}
+                {#each g.items as r}<li title={r.text}>{r.plain || r.text}</li>{/each}
               </ul>
-            {/if}
+            {/each}
           {:else if tab === 'wx'}
             {#if metar}
               <div class="section-title">METAR <span class="faint">· {fmtAge(metar.obsTime)}</span></div>

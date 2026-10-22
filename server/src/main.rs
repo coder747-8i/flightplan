@@ -1,8 +1,10 @@
 //! Flightplan API server: airport data, search, terrain profiles, weather/TFR proxy, Windy,
 //! and static hosting for the web app + PMTiles chart.
 
+mod airspace;
 mod db;
 mod geo;
+mod notam;
 mod proxy;
 mod terrain;
 mod wx;
@@ -21,10 +23,13 @@ use tower_http::{compression::CompressionLayer, services::ServeDir};
 
 pub struct AppState {
     pub db: db::Db,
+    pub airspace: airspace::Airspace,
     pub terrain: terrain::Terrain,
     pub cache: proxy::Cached,
     pub windy_point_key: Option<String>,
     pub windy_map_key: Option<String>,
+    pub notam_id: Option<String>,
+    pub notam_secret: Option<String>,
 }
 
 type S = State<Arc<AppState>>;
@@ -54,10 +59,13 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
     let state = Arc::new(AppState {
         db: db::Db::open(&root.join("data/build/aviation.sqlite"))?,
+        airspace: airspace::Airspace::load(&root.join("data/build/airspace_index.json"))?,
         terrain: terrain::Terrain::new(root.join("data/cache/terrarium"), http.clone()),
         cache: proxy::Cached::new(http),
         windy_point_key: std::env::var("WINDY_POINT_KEY").ok().filter(|k| !k.is_empty()),
         windy_map_key: std::env::var("WINDY_MAP_KEY").ok().filter(|k| !k.is_empty()),
+        notam_id: std::env::var("FAA_NOTAM_CLIENT_ID").ok().filter(|k| !k.is_empty()),
+        notam_secret: std::env::var("FAA_NOTAM_CLIENT_SECRET").ok().filter(|k| !k.is_empty()),
     });
 
     let api = Router::new()
@@ -70,7 +78,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/profile", post(profile))
         .route("/obstacles", get(obstacles))
         .route("/elevation", get(elevation))
-        .merge(wx::routes());
+        .route("/fbo/{id}", get(fbo))
+        .merge(wx::routes())
+        .merge(notam::routes());
 
     let web = root.join("web/dist");
     let app = Router::new()
@@ -91,6 +101,7 @@ async fn config(State(s): S) -> Json<Value> {
     Json(json!({
         "windyMapKey": s.windy_map_key,
         "windyPoint": s.windy_point_key.is_some(),
+        "notams": s.notam_id.is_some() && s.notam_secret.is_some(),
     }))
 }
 
@@ -98,6 +109,13 @@ async fn airport(State(s): S, Path(id): Path<String>) -> ApiResult<Response> {
     Ok(match s.db.airport(&id)? {
         Some(v) => Json(v).into_response(),
         None => (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response(),
+    })
+}
+
+async fn fbo(State(s): S, Path(id): Path<String>) -> ApiResult<Response> {
+    Ok(match s.db.fbos(&id)? {
+        Some(v) => Json(v).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!([]))).into_response(),
     })
 }
 
@@ -168,7 +186,9 @@ async fn profile(State(s): S, Json(req): Json<terrain::ProfileReq>) -> ApiResult
             d0 += len;
         }
     }
-    Ok(Json(json!({"samples": samples, "obstacles": obs})))
+    let along: Vec<(f64, f64, f64)> = samples.iter().map(|x| (x.d, x.lat, x.lon)).collect();
+    let crossings = s.airspace.crossings(&along);
+    Ok(Json(json!({"samples": samples, "obstacles": obs, "airspace": crossings})))
 }
 
 #[derive(Deserialize)]

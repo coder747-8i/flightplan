@@ -5,4 +5,6 @@ export const mapRef: {
   map?: MLMap
   /** a panel can claim map clicks (e.g. "add waypoint" mode); return true to consume */
   onMapClick?: (e: MapMouseEvent) => boolean
+  /** set after a drag ends so the trailing click doesn't also select things */
+  suppressClick?: boolean
 } = {}

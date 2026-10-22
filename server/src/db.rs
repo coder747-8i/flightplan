@@ -173,11 +173,22 @@ impl Db {
             .collect();
         a["attendance"] = Value::Array(att);
 
-        let mut st = conn.prepare("SELECT element, text FROM remark WHERE site_no = ?1")?;
-        let rmk: Vec<Value> = st
-            .query_map([&site], |r| Ok(json!({"element": s(r, 0), "text": s(r, 1)})))?
-            .filter_map(Result::ok)
-            .collect();
+        // classified remarks (pipeline/build_fbo.py); fall back to the raw table
+        let rmk: Vec<Value> = match conn.prepare("SELECT element, category, text, plain, phones FROM remark2 WHERE site_no = ?1") {
+            Ok(mut st) => st
+                .query_map([&site], |r| {
+                    Ok(json!({"element": s(r, 0), "category": s(r, 1), "text": s(r, 2), "plain": s(r, 3),
+                              "phones": serde_json::from_str::<Value>(&s(r, 4)).unwrap_or(Value::Null)}))
+                })?
+                .filter_map(Result::ok)
+                .collect(),
+            Err(_) => {
+                let mut st = conn.prepare("SELECT element, text FROM remark WHERE site_no = ?1")?;
+                st.query_map([&site], |r| Ok(json!({"element": s(r, 0), "category": "other", "text": s(r, 1), "plain": s(r, 1)})))?
+                    .filter_map(Result::ok)
+                    .collect()
+            }
+        };
         a["remarks"] = Value::Array(rmk);
 
         let mut st = conn.prepare("SELECT id, type, elev, phone, freq FROM awos WHERE site_no = ?1 OR id = ?2")?;
@@ -187,6 +198,32 @@ impl Db {
             .collect();
         a["awos"] = Value::Array(awos);
         Ok(Some(a))
+    }
+
+    /// FBOs at an airport, with the NASR fuel/services summary attached to each.
+    pub fn fbos(&self, ident: &str) -> anyhow::Result<Option<Value>> {
+        let conn = self.conn.lock();
+        let Some(site) = self.site_for(&conn, ident)? else { return Ok(None) };
+        let fuel: String = conn.query_row("SELECT fuel FROM airport WHERE site_no = ?1", [&site], |r| r.get::<_, Option<String>>(0)).optional()?.flatten().unwrap_or_default();
+        let fuel: Vec<String> = fuel.split(',').filter(|x| !x.trim().is_empty()).map(fuel_name).collect();
+        let mut st = match conn.prepare("SELECT name, brand, phone, website, address, lat, lon, confidence, sources, notes, kind FROM fbo WHERE site_no = ?1 ORDER BY kind = 'fbo' DESC, confidence DESC") {
+            Ok(st) => st,
+            Err(_) => return Ok(Some(json!([]))),
+        };
+        let list: Vec<Value> = st
+            .query_map([&site], |r| {
+                Ok(json!({
+                    "name": s(r, 0), "brand": s(r, 1), "phone": s(r, 2), "website": s(r, 3), "address": s(r, 4),
+                    "lat": r.get::<_, Option<f64>>(5)?, "lon": r.get::<_, Option<f64>>(6)?, "confidence": r.get::<_, Option<f64>>(7)?,
+                    "sources": serde_json::from_str::<Value>(&s(r, 8)).unwrap_or(json!([])),
+                    "notes": serde_json::from_str::<Value>(&s(r, 9)).unwrap_or(json!([])),
+                    "fuel": fuel,
+                    "kind": s(r, 10),
+                }))
+            })?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(Some(Value::Array(list)))
     }
 
     /// Resolve one route identifier: airport (FAA or ICAO), navaid, then fix.
