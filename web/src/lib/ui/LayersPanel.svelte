@@ -18,7 +18,9 @@
         { key: 'classE', label: 'Class E', hint: 'Surface areas and 700 ft AGL floors', swatch: (p) => p.classE },
         { key: 'classEhigh', label: 'Class E, 1200 AGL & en route', hint: 'Usually hidden on sectionals' },
         { key: 'modeC', label: 'Mode C veil', hint: '30 NM rings around Class B' },
-        { key: 'sua', label: 'Special use', hint: 'Restricted, prohibited, MOA, warning, alert', swatch: (p) => p.restricted },
+        { key: 'restricted', label: 'Restricted & prohibited', hint: 'R- and P- areas', swatch: (p) => p.restricted },
+        { key: 'moa', label: 'MOAs', hint: 'Military operations areas', swatch: (p) => p.moa },
+        { key: 'warningAlert', label: 'Warning & alert areas', swatch: (p) => p.warning },
         { key: 'airspaceLabels', label: 'Altitude labels' },
       ],
     },
@@ -52,9 +54,9 @@
   ]
 
   const presets: { label: string; on: LayerGroup[] }[] = [
-    { label: 'VFR', on: ['terrain', 'basemap', 'classB', 'classC', 'classD', 'classE', 'sua', 'airspaceLabels', 'airportsPublic', 'airportsPrivate', 'runways', 'navaids', 'vfrWaypoints', 'obstacles'] },
-    { label: 'IFR low', on: ['terrain', 'classB', 'classC', 'classD', 'sua', 'airportsPublic', 'runways', 'navaids', 'ifrFixes', 'airwaysLow'] },
-    { label: 'Minimal', on: ['terrain', 'classB', 'classC', 'classD', 'airportsPublic'] },
+    { label: 'VFR', on: ['terrain', 'basemap', 'classB', 'classC', 'classD', 'classE', 'restricted', 'moa', 'warningAlert', 'airspaceLabels', 'airportsPublic', 'airportsPrivate', 'runways', 'navaids', 'vfrWaypoints', 'obstacles'] },
+    { label: 'IFR low', on: ['terrain', 'classB', 'classC', 'classD', 'restricted', 'moa', 'warningAlert', 'airportsPublic', 'runways', 'navaids', 'ifrFixes', 'airwaysLow'] },
+    { label: 'Minimal', on: ['terrain', 'classB', 'classC', 'classD', 'restricted', 'airportsPublic'] },
   ]
 
   function applyPreset(on: LayerGroup[]) {

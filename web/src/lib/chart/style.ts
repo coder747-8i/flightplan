@@ -17,8 +17,11 @@ export const LAYER_GROUPS = {
   classE: ['as-E-surface', 'as-E5-fade', 'as-E5-msl'],
   classEhigh: ['as-E-1200'],
   modeC: ['as-modec'],
-  sua: ['as-sua-fill', 'as-sua-line', 'as-sua-hatch'],
-  airspaceLabels: ['as-labels-bc', 'as-labels-d', 'as-labels-sua', 'as-labels-e'],
+  restricted: ['as-r-fill', 'as-r-line', 'as-r-hatch', 'as-labels-r'],
+  moa: ['as-moa-fill', 'as-moa-line', 'as-labels-moa'],
+  warningAlert: ['as-wa-fill', 'as-wa-line', 'as-labels-wa'],
+  // a layer listed in several groups shows only when all of them are on
+  airspaceLabels: ['as-labels-bc', 'as-labels-d', 'as-labels-r', 'as-labels-moa', 'as-labels-wa', 'as-labels-e'],
   airportsPublic: ['apt-public', 'apt-public-label'],
   airportsPrivate: ['apt-private', 'apt-private-label'],
   heliports: ['apt-heli'],
@@ -45,12 +48,18 @@ export const AIRSPACE_FILTERS: Record<string, FilterSpecification> = {
   'as-E5-msl': ['all', ['==', ['get', 'kind'], 'E5'], ['==', ['get', 'lo_agl'], 0]],
   'as-E-1200': ['all', ['in', ['get', 'kind'], ['literal', ['E5', 'E6']]], ['==', ['get', 'lo_agl'], 1], ['>', ['get', 'lo'], 700]],
   'as-modec': ['==', ['get', 'kind'], 'MODEC'],
-  'as-sua-fill': ['in', ['get', 'kind'], ['literal', ['R', 'P', 'W', 'A', 'MOA']]],
-  'as-sua-line': ['in', ['get', 'kind'], ['literal', ['R', 'P', 'W', 'A', 'MOA']]],
-  'as-sua-hatch': ['in', ['get', 'kind'], ['literal', ['R', 'P']]],
+  'as-r-fill': ['in', ['get', 'kind'], ['literal', ['R', 'P']]],
+  'as-r-line': ['in', ['get', 'kind'], ['literal', ['R', 'P']]],
+  'as-r-hatch': ['in', ['get', 'kind'], ['literal', ['R', 'P']]],
+  'as-moa-fill': ['==', ['get', 'kind'], 'MOA'],
+  'as-moa-line': ['==', ['get', 'kind'], 'MOA'],
+  'as-wa-fill': ['in', ['get', 'kind'], ['literal', ['W', 'A']]],
+  'as-wa-line': ['in', ['get', 'kind'], ['literal', ['W', 'A']]],
   'as-labels-bc': ['in', ['get', 'kind'], ['literal', ['B', 'C']]],
   'as-labels-d': ['==', ['get', 'kind'], 'D'],
-  'as-labels-sua': ['in', ['get', 'kind'], ['literal', ['R', 'P', 'W', 'A', 'MOA']]],
+  'as-labels-r': ['in', ['get', 'kind'], ['literal', ['R', 'P']]],
+  'as-labels-moa': ['==', ['get', 'kind'], 'MOA'],
+  'as-labels-wa': ['in', ['get', 'kind'], ['literal', ['W', 'A']]],
   'as-labels-e': ['==', ['get', 'kind'], 'E5'],
 }
 
@@ -143,22 +152,26 @@ export function buildStyle(p: Palette): StyleSpecification {
       id: 'as-modec', type: 'line', source: 'airspace', 'source-layer': 'airspace',
       paint: { 'line-color': p.classC, 'line-width': 1, 'line-opacity': 0.5 },
     },
-    {
-      id: 'as-sua-fill', type: 'fill', source: 'airspace', 'source-layer': 'airspace',
-      paint: { 'fill-color': suaColor(p), 'fill-opacity': ['match', ['get', 'kind'], 'P', 0.12, 'R', 0.07, 0.04] },
-    },
-    {
-      id: 'as-sua-hatch', type: 'line', source: 'airspace', 'source-layer': 'airspace',
-      paint: {
-        'line-color': p.restricted, 'line-opacity': 0.35,
-        'line-width': zoomWidth([[5, 3], [10, 9], [13, 16]]), 'line-offset': zoomWidth([[5, 1.5], [10, 4.5], [13, 8]]),
-        'line-dasharray': [0.25, 0.25],
+    ...(['wa', 'moa', 'r'] as const).flatMap((g): LayerSpecification[] => [
+      {
+        id: `as-${g}-fill`, type: 'fill', source: 'airspace', 'source-layer': 'airspace',
+        paint: { 'fill-color': suaColor(p), 'fill-opacity': ['match', ['get', 'kind'], 'P', 0.12, 'R', 0.07, 0.04] },
       },
-    },
-    {
-      id: 'as-sua-line', type: 'line', source: 'airspace', 'source-layer': 'airspace',
-      paint: { 'line-color': suaColor(p), 'line-width': zoomWidth([[5, 1], [12, 2]]), 'line-opacity': 0.9 },
-    },
+      ...(g === 'r'
+        ? [{
+            id: 'as-r-hatch', type: 'line', source: 'airspace', 'source-layer': 'airspace',
+            paint: {
+              'line-color': p.restricted, 'line-opacity': 0.35,
+              'line-width': zoomWidth([[5, 3], [10, 9], [13, 16]]), 'line-offset': zoomWidth([[5, 1.5], [10, 4.5], [13, 8]]),
+              'line-dasharray': [0.25, 0.25],
+            },
+          } as LayerSpecification]
+        : []),
+      {
+        id: `as-${g}-line`, type: 'line', source: 'airspace', 'source-layer': 'airspace',
+        paint: { 'line-color': suaColor(p), 'line-width': zoomWidth([[5, 1], [12, 2]]), 'line-opacity': 0.9 },
+      },
+    ]),
     {
       id: 'as-D-line', type: 'line', source: 'airspace', 'source-layer': 'airspace',
       paint: { 'line-color': p.classD, 'line-width': zoomWidth([[6, 1], [12, 2.2]]), 'line-dasharray': [3, 2] },
@@ -215,14 +228,14 @@ export function buildStyle(p: Palette): StyleSpecification {
       layout: { 'text-field': ['get', 'label'], 'text-font': FONT, 'text-size': 11, 'text-allow-overlap': false },
       paint: { 'text-color': p.classB, 'text-halo-color': p.labelHalo, 'text-halo-width': 1.5 },
     },
-    {
-      id: 'as-labels-sua', type: 'symbol', source: 'airspace', 'source-layer': 'airspace_labels', minzoom: 7,
+    ...(['wa', 'moa', 'r'] as const).map((g): LayerSpecification => ({
+      id: `as-labels-${g}`, type: 'symbol', source: 'airspace', 'source-layer': 'airspace_labels', minzoom: 7,
       layout: {
         'text-field': ['format', ['get', 'label'], { 'font-scale': 1 }, '\n', {}, ['get', 'range'], { 'font-scale': 0.85 }],
         'text-font': FONT_ITALIC, 'text-size': 11, 'text-max-width': 12,
       },
       paint: { 'text-color': suaColor(p), 'text-halo-color': p.labelHalo, 'text-halo-width': 1.5 },
-    },
+    })),
     {
       id: 'as-labels-d', type: 'symbol', source: 'airspace', 'source-layer': 'airspace_labels', minzoom: 8,
       layout: { 'text-field': ['get', 'label'], 'text-font': FONT_BOLD, 'text-size': 12 },

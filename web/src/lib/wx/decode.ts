@@ -105,7 +105,11 @@ function visibility(tok: string, prev?: string): string | null {
     return `Visibility ${m[1] ? 'less than ' : ''}${txt} mile${v === 1 ? '' : 's'}`
   }
   m = tok.match(/^(\d{4})$/)
-  if (m) return m[1] === '9999' ? 'Visibility 10 km or more' : `Visibility ${parseInt(m[1], 10).toLocaleString()} m`
+  if (m) {
+    if (m[1] === '9999') return 'Visibility 6 miles or more'
+    const sm = parseInt(m[1], 10) / 1609.34
+    return `Visibility ${sm < 3 ? sm.toFixed(1) : Math.round(sm)} miles`
+  }
   return null
 }
 
@@ -130,6 +134,9 @@ function sky(tok: string): string | null {
 }
 
 const tempC = (s: string) => (s.startsWith('M') ? -parseInt(s.slice(1), 10) : parseInt(s, 10))
+// output units: °F and inches of mercury
+const degF = (c: number, digits = 0) => `${(c * 9 / 5 + 32).toFixed(digits)}°F`
+const inHg = (hpa: number) => `${(hpa * 0.02953).toFixed(2)} inHg`
 
 function common(tok: string, prev?: string): string | null {
   return wind(tok) ?? visibility(tok, prev) ?? sky(tok) ?? weather(tok)
@@ -144,11 +151,11 @@ function remarks(tokens: string[]): string[] {
     else if (t === 'AO2') out.push('Automated station with precipitation sensor')
     else if ((m = t.match(/^SLP(\d{3})$/))) {
       const v = parseInt(m[1], 10) / 10
-      out.push(`Sea-level pressure ${(v < 50 ? 1000 + v : 900 + v).toFixed(1)} hPa`)
+      out.push(`Sea-level pressure ${inHg(v < 50 ? 1000 + v : 900 + v)}`)
     } else if ((m = t.match(/^T([01])(\d{3})([01])(\d{3})$/))) {
       const a = (m[1] === '1' ? -1 : 1) * parseInt(m[2], 10) / 10
       const b = (m[3] === '1' ? -1 : 1) * parseInt(m[4], 10) / 10
-      out.push(`Exact temperature ${a.toFixed(1)}°C, dew point ${b.toFixed(1)}°C`)
+      out.push(`Exact temperature ${degF(a, 1)}, dew point ${degF(b, 1)}`)
     } else if (t === 'PK' && tokens[i + 1] === 'WND' && (m = (tokens[i + 2] ?? '').match(/^(\d{3})(\d{2,3})\/(\d{2,4})$/))) {
       out.push(`Peak wind ${m[1]}° at ${parseInt(m[2], 10)} kt at ${m[3].length > 2 ? m[3].slice(0, 2) + ':' + m[3].slice(2) : ':' + m[3]}`)
       i += 2
@@ -168,9 +175,9 @@ function remarks(tokens: string[]): string[] {
     else if ((m = t.match(/^P(\d{4})$/))) out.push(`Precipitation last hour ${(parseInt(m[1], 10) / 100).toFixed(2)} in`)
     else if ((m = t.match(/^([67])(\d{4})$/))) out.push(`Precipitation ${m[1] === '6' ? 'last 3–6 hours' : 'last 24 hours'} ${(parseInt(m[2], 10) / 100).toFixed(2)} in`)
     else if ((m = t.match(/^4\/(\d{3})$/))) out.push(`Snow depth ${parseInt(m[1], 10)} in`)
-    else if ((m = t.match(/^([12])([01])(\d{3})$/))) out.push(`${m[1] === '1' ? 'Highest' : 'Lowest'} temperature last 6 h ${((m[2] === '1' ? -1 : 1) * parseInt(m[3], 10) / 10).toFixed(1)}°C`)
-    else if ((m = t.match(/^5(\d)(\d{3})$/))) out.push(`Pressure change last 3 h ${(parseInt(m[2], 10) / 10).toFixed(1)} hPa`)
-    else if ((m = t.match(/^4([01])(\d{3})([01])(\d{3})$/))) out.push(`24-hour high ${((m[1] === '1' ? -1 : 1) * parseInt(m[2], 10) / 10).toFixed(1)}°C, low ${((m[3] === '1' ? -1 : 1) * parseInt(m[4], 10) / 10).toFixed(1)}°C`)
+    else if ((m = t.match(/^([12])([01])(\d{3})$/))) out.push(`${m[1] === '1' ? 'Highest' : 'Lowest'} temperature last 6 h ${degF((m[2] === '1' ? -1 : 1) * parseInt(m[3], 10) / 10)}`)
+    else if ((m = t.match(/^5(\d)(\d{3})$/))) out.push(`Pressure ${['rising', 'rising', 'rising', 'rising', 'steady', 'falling', 'falling', 'falling', 'falling', 'steady'][+m[1]] ?? 'changed'} ${(parseInt(m[2], 10) / 10 * 0.02953).toFixed(2)} inHg in the last 3 h`)
+    else if ((m = t.match(/^4([01])(\d{3})([01])(\d{3})$/))) out.push(`24-hour high ${degF((m[1] === '1' ? -1 : 1) * parseInt(m[2], 10) / 10)}, low ${degF((m[3] === '1' ? -1 : 1) * parseInt(m[4], 10) / 10)}`)
     else if (t === 'CIG' && tokens[i + 1]) {
       const v = tokens[++i].match(/^(\d{3})V(\d{3})$/)
       out.push(v ? `Ceiling varying ${ft(v[1])} to ${ft(v[2])}` : `Ceiling ${tokens[i]}`)
@@ -215,9 +222,9 @@ export function decodeMetar(raw: string): string[] {
       out.push(m ? `Runway ${m[1]} visual range ${m[2] === 'M' ? 'below ' : m[2] === 'P' ? 'above ' : ''}${parseInt(m[3], 10).toLocaleString()}${m[5] ? `–${parseInt(m[5], 10).toLocaleString()}` : ''} ft` : t)
     } else if (/^M?\d{2}\/(M?\d{2})?$/.test(t)) {
       const [a, b] = t.split('/')
-      out.push(`Temperature ${tempC(a)}°C${b ? `, dew point ${tempC(b)}°C (spread ${tempC(a) - tempC(b)}°)` : ''}`)
+      out.push(`Temperature ${degF(tempC(a))}${b ? `, dew point ${degF(tempC(b))} (spread ${Math.round((tempC(a) - tempC(b)) * 9 / 5)}°F)` : ''}`)
     } else if (/^A\d{4}$/.test(t)) out.push(`Altimeter ${t.slice(1, 3)}.${t.slice(3)} inHg`)
-    else if (/^Q\d{4}$/.test(t)) out.push(`Altimeter ${parseInt(t.slice(1), 10)} hPa`)
+    else if (/^Q\d{4}$/.test(t)) out.push(`Altimeter ${inHg(parseInt(t.slice(1), 10))}`)
     else if (/^\d$/.test(t) && /SM$/.test(toks[i + 1] ?? '')) continue // whole part of "1 1/2SM"
     else {
       const c = common(t, toks[i - 1])
@@ -269,7 +276,7 @@ export function decodeTaf(raw: string): { title: string; lines: string[] }[] {
       else if (t === 'NSW') cur.lines.push('No significant weather')
       else if (/^T[XN]M?\d{2}\/\d{4}Z$/.test(t)) {
         const mm = t.match(/^T([XN])(M?\d{2})\/(\d{2})(\d{2})Z$/)!
-        cur.lines.push(`${mm[1] === 'X' ? 'High' : 'Low'} temperature ${tempC(mm[2])}°C at ${mm[4]}:00 UTC on day ${mm[3]}`)
+        cur.lines.push(`${mm[1] === 'X' ? 'High' : 'Low'} temperature ${degF(tempC(mm[2]))} at ${mm[4]}:00 UTC on day ${mm[3]}`)
       } else if (/^(AUTOMATED|SENSOR|METWATCH|LAST|NO|AMDS|AFT|TIL|FROM|AND)$/.test(t)) cur.lines.push(expand(toks.slice(i).join(' ')))
       else cur.lines.push(common(t, toks[i - 1]) ?? expand(t))
       if (/^(AUTOMATED|SENSOR|METWATCH|LAST|NO|AMDS|AFT|TIL|FROM|AND)$/.test(t)) break
@@ -320,7 +327,7 @@ export function decodePirep(raw: string): string[] {
         out.push(`Weather: ${v.split(/\s+/).map((t) => visibility(t) ?? weather(t) ?? t).join(', ')}`)
         break
       case 'TA':
-        out.push(`Outside air temperature ${tempC(v)}°C`)
+        out.push(`Outside air temperature ${degF(tempC(v))}`)
         break
       case 'WV': {
         const m = v.match(/^(\d{3})(\d{2,3})/)

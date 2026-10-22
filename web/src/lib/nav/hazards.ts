@@ -244,7 +244,7 @@ export function analyze(h: HazardInput): Hazard[] {
       const pa = elevFt + (1013.25 - m.altim) * 30
       const isa = 15 - (2 * pa) / 1000
       const da = pa + 120 * (m.temp - isa)
-      if (da > 5000) out.push({ level: da > 8000 ? 'warning' : 'caution', category: 'Performance', title: `Density altitude ${Math.round(da / 100) * 100} ft at ${id}`, detail: `Field elevation ${Math.round(elevFt)} ft, ${m.temp}°C. Expect longer takeoff roll and reduced climb. Check the POH charts.` })
+      if (da > 5000) out.push({ level: da > 8000 ? 'warning' : 'caution', category: 'Performance', title: `Density altitude ${Math.round(da / 100) * 100} ft at ${id}`, detail: `Field elevation ${Math.round(elevFt)} ft, ${Math.round(m.temp * 9 / 5 + 32)}°F. Expect longer takeoff roll and reduced climb. Check the POH charts.` })
     }
   })
 

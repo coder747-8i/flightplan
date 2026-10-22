@@ -12,7 +12,9 @@ const DEFAULT_LAYERS: Record<LayerGroup, boolean> = {
   classE: true,
   classEhigh: false,
   modeC: false,
-  sua: true,
+  restricted: true,
+  moa: true,
+  warningAlert: true,
   airspaceLabels: true,
   airportsPublic: true,
   airportsPrivate: true,
@@ -46,7 +48,10 @@ export function save(key: string, value: unknown) {
 
 class AppState {
   theme = $state<'day' | 'night'>(load('prefs', { theme: 'day' as 'day' | 'night' }).theme)
-  layers = $state<Record<LayerGroup, boolean>>(load('layers', DEFAULT_LAYERS))
+  // keep only known groups (an old "sua" switch became restricted / moa / warningAlert)
+  layers = $state<Record<LayerGroup, boolean>>(
+    Object.fromEntries(Object.entries(load('layers', DEFAULT_LAYERS)).filter(([k]) => k in DEFAULT_LAYERS)) as Record<LayerGroup, boolean>,
+  )
   altitude = $state(load('altitude', { enabled: false, lo: 0, hi: 12500 }))
   panel = $state<Panel>('none')
   profileOpen = $state(load('prefs2', { profileOpen: true }).profileOpen)

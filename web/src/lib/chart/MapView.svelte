@@ -21,10 +21,12 @@
 
   function applyLayers() {
     if (!map) return
+    // a layer in several groups (e.g. MOA labels: "MOA" and "Altitude labels") needs all of them on
+    const on = new Map<string, boolean>()
     for (const [group, ids] of Object.entries(LAYER_GROUPS) as [LayerGroup, readonly string[]][]) {
-      const vis = app.layers[group] ? 'visible' : 'none'
-      for (const id of ids) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis)
+      for (const id of ids) on.set(id, (on.get(id) ?? true) && !!app.layers[group])
     }
+    for (const [id, visible] of on) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none')
   }
 
   function applyAltitude() {
@@ -157,7 +159,9 @@
     if (kind === 'MODEC') return L.modeC
     if (kind === 'E6' || (kind === 'E5' && loAgl && loFt > 700)) return L.classEhigh
     if (kind.startsWith('E')) return L.classE
-    return L.sua
+    if (kind === 'MOA') return L.moa
+    if (kind === 'W' || kind === 'A') return L.warningAlert
+    return L.restricted
   }
 
   function pointInRing(x: number, y: number, ring: number[][]) {
