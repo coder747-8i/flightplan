@@ -4,7 +4,11 @@ tiles/*.pmtiles
 node_modules/
 web/dist/
 server/target/
+# secrets: any .env variant except the blank template
 .env
+.env.*
+*.env
+!.env.example
 *.log
 .venv/
 data/cache/
