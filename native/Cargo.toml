@@ -3,7 +3,7 @@ name = "flightplan"
 version = "0.1.0"
 edition = "2024"
 description = "Flight planner for the US: sectional-style chart, routes, navlog, weather, weight & balance and briefing"
-license = "AGPL-3.0-or-later"
+license = "AGPL-3.0-only"
 default-run = "flightplan"
 
 [lib]

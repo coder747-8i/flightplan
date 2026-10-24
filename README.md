@@ -119,7 +119,7 @@ Add keys in the app under **Settings** (or during setup). They're stored in
 
 ## License
 
-Flightplan is free software under the [GNU Affero General Public License v3.0 or later](LICENSE).
+Flightplan is free software under the [GNU Affero General Public License v3.0 only](LICENSE).
 If you run a modified version as a network service, you must offer its users the source of
 that version. Bundled third-party assets keep their own licenses (the Inter font is under the
 SIL Open Font License, see `native/assets/fonts/Inter-LICENSE.txt`), and the chart data comes
