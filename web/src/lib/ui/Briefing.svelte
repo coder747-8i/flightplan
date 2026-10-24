@@ -14,6 +14,7 @@
   import HazardList from './HazardList.svelte'
   import WBChart from './WBChart.svelte'
   import WxText from '../wx/WxText.svelte'
+  import { printPage } from '../io/files'
 
   const log = $derived(plan.log)
   const ac = $derived(aircraft.active)
@@ -84,7 +85,7 @@
     <button class="btn" onclick={() => (app.panel = 'none')}><X size={15} /> Back to chart</button>
     <div class="spacer"></div>
     <a class="btn" href="https://www.1800wxbrief.com/" target="_blank" rel="noopener noreferrer"><ExternalLink size={14} /> Official briefing (1800wxbrief)</a>
-    <button class="btn primary" onclick={() => window.print()}><Printer size={15} /> Print</button>
+    <button class="btn primary" onclick={printPage}><Printer size={15} /> Print</button>
   </div>
 
   {#if !log || !ac}

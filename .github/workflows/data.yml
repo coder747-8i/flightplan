@@ -1,0 +1,55 @@
+# Chart & airport data pack: rebuilt from the FAA's current 28-day cycle and published as
+# flightplan-data.zip on the `data` release, which the app's setup screen downloads.
+# Runs weekly and does nothing when the current cycle is already published.
+name: Chart data
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if this cycle is already published
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 6 * * 4'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Current FAA cycle
+        id: cycle
+        run: |
+          cycle=$(curl -sf -H 'Accept: application/json' 'https://external-api.faa.gov/apra/nfdc/nasr/chart?edition=current' \
+            | python3 -c 'import json,sys,datetime as d; e=json.load(sys.stdin)["edition"][0]; print(d.datetime.strptime(e["editionDate"],"%m/%d/%Y").date())')
+          echo "cycle=$cycle" >> "$GITHUB_OUTPUT"
+          published=$(gh release view data --json body -q .body 2>/dev/null | grep -o 'cycle [0-9-]*' | cut -d' ' -f2 || true)
+          echo "cycle $cycle, published ${published:-none}"
+          if [ "$cycle" = "$published" ] && [ "${{ inputs.force }}" != "true" ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Build tools
+        if: steps.cycle.outputs.skip != 'true'
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev zlib1g-dev
+
+      # the same script you can run locally
+      - name: Build data
+        if: steps.cycle.outputs.skip != 'true'
+        run: ./pipeline/build_datapack.sh --cycle ${{ steps.cycle.outputs.cycle }} --out dist/flightplan-data.zip
+
+      - name: Publish
+        if: steps.cycle.outputs.skip != 'true'
+        run: |
+          notes="Flightplan chart data, FAA cycle ${{ steps.cycle.outputs.cycle }}. Install it from the app's setup screen or Settings."
+          if gh release view data >/dev/null 2>&1; then
+            gh release upload data dist/flightplan-data.zip --clobber
+            gh release edit data --notes "$notes"
+          else
+            gh release create data dist/flightplan-data.zip --prerelease --title "Chart data" --notes "$notes"
+          fi

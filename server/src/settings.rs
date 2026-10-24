@@ -56,6 +56,13 @@ impl Settings {
         self.keys.read().clone()
     }
 
+    /// Save and use a new set of keys.
+    pub fn replace(&self, k: Keys) -> anyhow::Result<()> {
+        self.save(&k)?;
+        *self.keys.write() = k;
+        Ok(())
+    }
+
     fn save(&self, k: &Keys) -> anyhow::Result<()> {
         // keep explicit clears as "" so .env doesn't resurrect them on restart
         let out = json!({
@@ -136,12 +143,18 @@ struct TestReq {
 
 /// Try a saved key against its service and report whether it works.
 async fn test(State(s): State<Arc<AppState>>, Json(t): Json<TestReq>) -> Json<Value> {
+    let (ok, message) = test_key(&s, &t.which).await;
+    Json(json!({"ok": ok, "message": message}))
+}
+
+/// (works, message) for "windyPoint", "windyMap" or "notam".
+pub async fn test_key(s: &AppState, which: &str) -> (bool, String) {
     let k = s.settings.get();
     let http = s.cache.http();
     let result: anyhow::Result<String> = async {
-        match t.which.as_str() {
+        match which {
             "windyPoint" => {
-                let key = k.windy_point.ok_or_else(|| anyhow::anyhow!("no key saved"))?;
+                let key = k.windy_point.clone().ok_or_else(|| anyhow::anyhow!("no key saved"))?;
                 let r = http
                     .post("https://api.windy.com/api/point-forecast/v2")
                     .json(&json!({"lat": 33.4, "lon": -112.0, "model": "gfs", "parameters": ["wind"], "levels": ["850h"], "key": key}))
@@ -151,7 +164,7 @@ async fn test(State(s): State<Arc<AppState>>, Json(t): Json<TestReq>) -> Json<Va
                 if status.is_success() { Ok("Windy point forecast key works".into()) } else { anyhow::bail!("Windy answered HTTP {status}: {}", r.text().await.unwrap_or_default().chars().take(160).collect::<String>()) }
             }
             "notam" => {
-                let (id, secret) = (k.notam_id.ok_or_else(|| anyhow::anyhow!("no client id saved"))?, k.notam_secret.ok_or_else(|| anyhow::anyhow!("no client secret saved"))?);
+                let (id, secret) = (k.notam_id.clone().ok_or_else(|| anyhow::anyhow!("no client id saved"))?, k.notam_secret.clone().ok_or_else(|| anyhow::anyhow!("no client secret saved"))?);
                 let r = http
                     .get("https://external-api.faa.gov/notamapi/v1/notams")
                     .header("client_id", id)
@@ -170,8 +183,8 @@ async fn test(State(s): State<Arc<AppState>>, Json(t): Json<TestReq>) -> Json<Va
         }
     }
     .await;
-    Json(match result {
-        Ok(msg) => json!({"ok": true, "message": msg}),
-        Err(e) => json!({"ok": false, "message": e.to_string()}),
-    })
+    match result {
+        Ok(msg) => (true, msg),
+        Err(e) => (false, e.to_string()),
+    }
 }

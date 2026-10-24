@@ -30,6 +30,41 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/tfr", get(tfr))
 }
 
+/// METARs by station ids (comma/space separated) or for a "lat0,lon0,lat1,lon1" box.
+pub async fn metars(s: &AppState, ids: Option<&str>, bbox: Option<&str>) -> anyhow::Result<Value> {
+    let url = match (ids, bbox) {
+        (Some(ids), _) => format!("{AWC}/metar?ids={}&format=json&taf=false", clean(ids).replace(' ', ",")),
+        (None, Some(b)) => format!("{AWC}/metar?bbox={}&format=json", clean(b)),
+        _ => anyhow::bail!("ids or bbox required"),
+    };
+    json_or_empty(s, &url, 300).await
+}
+
+pub async fn tafs(s: &AppState, ids: &str) -> anyhow::Result<Value> {
+    json_or_empty(s, &format!("{AWC}/taf?ids={}&format=json", clean(ids).replace(' ', ",")), 600).await
+}
+
+pub async fn pireps(s: &AppState, bbox: &str, age_h: f64) -> anyhow::Result<Value> {
+    json_or_empty(s, &format!("{AWC}/pirep?bbox={}&format=json&age={}", clean(bbox), age_h.clamp(0.5, 24.0)), 300).await
+}
+
+pub async fn airsigmets(s: &AppState) -> anyhow::Result<Value> {
+    json_or_empty(s, &format!("{AWC}/airsigmet?format=json"), 300).await
+}
+
+pub async fn gairmets(s: &AppState) -> anyhow::Result<Value> {
+    json_or_empty(s, &format!("{AWC}/gairmet?format=json"), 600).await
+}
+
+/// aviationweather.gov answers an empty body (not "[]") when nothing matches.
+async fn json_or_empty(s: &AppState, url: &str, ttl: u64) -> anyhow::Result<Value> {
+    let (b, _) = s.cache.get(url, Duration::from_secs(ttl)).await?;
+    if b.iter().all(|c| c.is_ascii_whitespace()) {
+        return Ok(Value::Array(vec![]));
+    }
+    Ok(serde_json::from_slice(&b)?)
+}
+
 fn raw(body: crate::proxy::Bytes, ct: &str, max_age: u32) -> Response {
     ([(header::CONTENT_TYPE, ct.to_string()), (header::CACHE_CONTROL, format!("public, max-age={max_age}"))], body.to_vec()).into_response()
 }
@@ -99,8 +134,12 @@ async fn windtemp(State(s): S, Query(q): Query<WindTempQ>) -> ApiResult<Response
     Ok(raw(b, "text/plain; charset=utf-8", 600))
 }
 
-/// Active TFRs as GeoJSON, with the FAA list's type/description merged into each shape.
 async fn tfr(State(s): S) -> ApiResult<Response> {
+    Ok(([(header::CACHE_CONTROL, "public, max-age=300")], Json(tfrs(&s).await?)).into_response())
+}
+
+/// Active TFRs as GeoJSON, with the FAA list's type/description merged into each shape.
+pub async fn tfrs(s: &AppState) -> anyhow::Result<Value> {
     let shapes = s
         .cache
         .get_json(
@@ -134,7 +173,7 @@ async fn tfr(State(s): S) -> ApiResult<Response> {
         });
         feats.push(f);
     }
-    Ok(([(header::CACHE_CONTROL, "public, max-age=300")], Json(json!({"type": "FeatureCollection", "features": feats}))).into_response())
+    Ok(json!({"type": "FeatureCollection", "features": feats}))
 }
 
 #[derive(Deserialize)]
@@ -147,17 +186,20 @@ struct WindsReq {
 const LEVELS: [(u32, f64); 10] =
     [(1000, 360.0), (925, 2500.0), (850, 4800.0), (800, 6400.0), (700, 9900.0), (600, 14000.0), (500, 18300.0), (400, 23600.0), (300, 30100.0), (250, 34000.0)];
 
-/// Winds and temperatures aloft at each point, hourly. Uses Windy when a key is configured.
 async fn winds(State(s): S, Json(req): Json<WindsReq>) -> ApiResult<Json<Value>> {
-    let pts: Vec<[f64; 2]> = req.points.into_iter().take(40).collect();
+    Ok(Json(winds_at(&s, req.points).await))
+}
+
+/// Winds and temperatures aloft at each [lon, lat] point, hourly. Uses Windy when a key is configured.
+pub async fn winds_at(s: &AppState, points: Vec<[f64; 2]>) -> Value {
+    let pts: Vec<[f64; 2]> = points.into_iter().take(40).collect();
     let windy = s.settings.get().windy_point;
     let results: Vec<Value> = stream::iter(pts.into_iter().map(|p| {
-        let s = s.clone();
         let windy = windy.clone();
         async move {
             let r = match &windy {
-                Some(key) => windy_point(&s, key, p[1], p[0]).await,
-                None => open_meteo(&s, p[1], p[0]).await,
+                Some(key) => windy_point(s, key, p[1], p[0]).await,
+                None => open_meteo(s, p[1], p[0]).await,
             };
             match r {
                 Ok(v) => v,
@@ -168,7 +210,7 @@ async fn winds(State(s): S, Json(req): Json<WindsReq>) -> ApiResult<Json<Value>>
     .buffered(6)
     .collect()
     .await;
-    Ok(Json(json!({"source": if windy.is_some() { "windy" } else { "open-meteo" }, "points": results})))
+    json!({"source": if windy.is_some() { "windy" } else { "open-meteo" }, "points": results})
 }
 
 fn uv_to_dir_kt(u: f64, v: f64) -> (f64, f64) {

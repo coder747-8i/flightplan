@@ -10,7 +10,8 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     allowedHosts: true,
-    proxy: { '/api': 'http://127.0.0.1:8787' },
+    // the Rust server (run.sh) answers the API and serves the chart tiles
+    proxy: { '/api': 'http://127.0.0.1:8787', '/tiles': 'http://127.0.0.1:8787' },
   },
-  preview: { host: '0.0.0.0', port: 4173, proxy: { '/api': 'http://127.0.0.1:8787' } },
+  preview: { host: '0.0.0.0', port: 4173, proxy: { '/api': 'http://127.0.0.1:8787', '/tiles': 'http://127.0.0.1:8787' } },
 })

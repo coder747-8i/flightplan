@@ -16,6 +16,11 @@
   import { app } from './lib/stores/app.svelte'
   import SettingsPanel from './lib/ui/SettingsPanel.svelte'
   import { config } from './lib/stores/config.svelte'
+  import HelpPanel from './lib/ui/HelpPanel.svelte'
+  import Onboarding from './lib/setup/Onboarding.svelte'
+  import Tour from './lib/setup/Tour.svelte'
+  import { onboarding } from './lib/stores/onboarding.svelte'
+  import { TriangleAlert } from '@lucide/svelte'
 
   const windyKey = $derived(config.windyMapKey)
   let windyOpen = $state(false)
@@ -39,9 +44,16 @@
   {#if app.panel === 'weather'}<WeatherPanel windyAvailable={!!windyKey} onWindy={() => { windyLoaded = true; windyOpen = true; app.panel = 'none' }} />{/if}
   {#if app.panel === 'aircraft'}<AircraftPanel />{/if}
   {#if app.panel === 'settings'}<SettingsPanel />{/if}
+  {#if app.panel === 'help'}<HelpPanel />{/if}
   <ProfileDrawer />
   <InfoCard />
   {#if app.panel === 'briefing'}<Briefing />{/if}
+  {#if config.loaded && !onboarding.open && (!config.data || config.dataExpired)}
+    <button class="data-banner glass" onclick={() => (app.panel = 'settings')}>
+      <TriangleAlert size={14} />
+      {config.data ? `Chart data expired ${config.data.expires}: update it in Settings` : 'No chart data installed: open Settings to install it'}
+    </button>
+  {/if}
   {#if app.cursor}
     <div class="coords glass num">
       {Math.abs(app.cursor.lat).toFixed(4)}°{app.cursor.lat >= 0 ? 'N' : 'S'}
@@ -49,6 +61,8 @@
     </div>
   {/if}
 </main>
+{#if onboarding.open}<Onboarding />{/if}
+{#if onboarding.touring && !onboarding.open}<Tour />{/if}
 
 <style>
   main {
@@ -65,6 +79,22 @@
     color: var(--text-2);
     z-index: 5;
     pointer-events: none;
+  }
+  .data-banner {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 25;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    color: var(--warn);
+    font-weight: 600;
+    font-size: 12px;
+    cursor: pointer;
   }
   @media (max-width: 640px) {
     .coords {

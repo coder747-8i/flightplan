@@ -1,15 +1,32 @@
 <script lang="ts">
-  import { Plus, Trash2, ChevronDown, CircleCheck, OctagonAlert } from '@lucide/svelte'
+  import { Plus, Trash2, ChevronDown, CircleCheck, OctagonAlert, FileUp, Download, Pencil, Copy } from '@lucide/svelte'
   import PanelShell from './PanelShell.svelte'
   import WBChart from './WBChart.svelte'
-  import { aircraft, computeWB, PRESETS } from '../stores/aircraft.svelte'
+  import AircraftWizard from './AircraftWizard.svelte'
+  import AircraftImport from './AircraftImport.svelte'
+  import { aircraft, computeWB } from '../stores/aircraft.svelte'
   import { plan } from '../stores/plan.svelte'
+  import { toFile, AIRCRAFT_EXT } from '../io/aircraftFile'
+  import { saveFile, slug } from '../io/files'
 
   const ac = $derived(aircraft.active)
   const wb = $derived(ac ? computeWB(ac, plan.log?.tripFuel ?? 0) : null)
   let editPerf = $state(false)
   let editWB = $state(false)
-  let addOpen = $state(false)
+  let wizard = $state<null | 'new' | 'edit'>(null)
+  let importing = $state(false)
+  let exportOpen = $state(false)
+  let notice = $state('')
+
+  async function exportList(list: typeof aircraft.list, name: string) {
+    exportOpen = false
+    try {
+      const where = await saveFile(`${slug(name)}${AIRCRAFT_EXT}`, toFile($state.snapshot(list)), 'application/json', 'Flightplan aircraft')
+      notice = where ? (where === 'downloaded' ? 'Exported' : `Saved to ${where}`) : ''
+    } catch (e) {
+      notice = `Export failed: ${(e as Error).message}`
+    }
+  }
 
   let envText = $state('')
   $effect(() => {
@@ -27,26 +44,34 @@
 
 <PanelShell title="Aircraft" subtitle="Performance and weight & balance" width={380}>
   {#snippet actions()}
-    <button class="btn ghost ico" title="Add aircraft" onclick={() => (addOpen = !addOpen)}><Plus size={16} /></button>
+    <button class="btn ghost ico" title="New aircraft (guided)" onclick={() => (wizard = 'new')} data-tour="aircraft-new"><Plus size={16} /></button>
+    <button class="btn ghost ico" title="Import aircraft files" onclick={() => (importing = true)}><FileUp size={15} /></button>
+    <span class="menu-wrap">
+      <button class="btn ghost ico" title="Export aircraft" onclick={() => (exportOpen = !exportOpen)}><Download size={15} /></button>
+      {#if exportOpen}
+        <div class="menu glass">
+          {#if ac}<button onclick={() => ac && exportList([ac], ac.tail || ac.name)}>Export {ac.tail || ac.name}</button>{/if}
+          <button onclick={() => exportList(aircraft.list, 'flightplan-fleet')}>Export all {aircraft.list.length} aircraft</button>
+        </div>
+      {/if}
+    </span>
   {/snippet}
-
-  {#if addOpen}
-    <div class="add">
-      <div class="faint small">Start from a template (typical POH numbers: replace them with your own aircraft's weighing record):</div>
-      {#each PRESETS as p, i}
-        <button class="btn" onclick={() => { aircraft.addPreset(i); addOpen = false }}>{p.name}</button>
-      {/each}
-    </div>
-  {/if}
 
   <div class="pick">
     <select class="field" bind:value={aircraft.activeId}>
       {#each aircraft.list as a}<option value={a.id}>{a.tail || 'No tail'} · {a.name}</option>{/each}
     </select>
-    {#if ac && aircraft.list.length > 1}
-      <button class="btn ghost ico" title="Delete this aircraft" onclick={() => ac && aircraft.remove(ac.id)}><Trash2 size={15} /></button>
-    {/if}
   </div>
+  {#if ac}
+    <div class="tools">
+      <button class="btn small" onclick={() => (wizard = 'edit')}><Pencil size={13} /> Edit step by step</button>
+      <button class="btn small ghost" onclick={() => ac && aircraft.duplicate(ac.id)} title="Duplicate this aircraft"><Copy size={13} /> Duplicate</button>
+      {#if aircraft.list.length > 1}
+        <button class="btn small ghost danger" title="Delete this aircraft" onclick={() => ac && confirm(`Delete ${ac.tail || ac.name}?`) && aircraft.remove(ac.id)}><Trash2 size={13} /></button>
+      {/if}
+    </div>
+  {/if}
+  {#if notice}<p class="notice faint">{notice}</p>{/if}
 
   {#if ac && wb}
     <div class="grid2">
@@ -141,25 +166,60 @@
   {/if}
 </PanelShell>
 
+{#if wizard}
+  <AircraftWizard edit={wizard === 'edit' ? ac : undefined} onclose={() => (wizard = null)} onimport={() => (importing = true)} />
+{/if}
+{#if importing}<AircraftImport onclose={() => (importing = false)} />{/if}
+
 <style>
   .ico {
     width: 30px;
     padding: 0;
     justify-content: center;
   }
-  .add {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 10px;
-    background: var(--surface-2);
-    border-radius: 10px;
-    margin-bottom: 10px;
-  }
   .pick {
     display: flex;
     gap: 6px;
+    margin-bottom: 6px;
+  }
+  .tools {
+    display: flex;
+    gap: 4px;
     margin-bottom: 10px;
+  }
+  .danger {
+    margin-left: auto;
+    color: var(--bad);
+  }
+  .notice {
+    font-size: 11.5px;
+    margin: -4px 0 8px;
+  }
+  .menu-wrap {
+    position: relative;
+  }
+  .menu {
+    position: absolute;
+    right: 0;
+    top: 34px;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    min-width: 190px;
+    padding: 4px;
+    background: var(--surface-solid);
+  }
+  .menu button {
+    text-align: left;
+    border: 0;
+    background: none;
+    padding: 8px 10px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .menu button:hover {
+    background: var(--surface-2);
   }
   .grid2,
   .grid3 {

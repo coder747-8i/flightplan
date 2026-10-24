@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowDownUp, Trash2, MousePointerClick, X, GripVertical, AreaChart, Plane, TriangleAlert, Fuel, Clock, Ruler } from '@lucide/svelte'
+  import { ArrowDownUp, Trash2, MousePointerClick, X, GripVertical, AreaChart, Plane, TriangleAlert, Fuel, Clock, Ruler, Share2, FileUp } from '@lucide/svelte'
   import PanelShell from './PanelShell.svelte'
   import { api } from '../api'
   import { app } from '../stores/app.svelte'
@@ -11,10 +11,39 @@
   import { variation } from '../nav/navlog'
   import { mapRef } from '../chart/mapRef'
   import HazardList from './HazardList.svelte'
+  import RouteExport from './RouteExport.svelte'
+  import { parseRouteFile } from '../io/flightplan'
+  import { pickFiles } from '../io/files'
 
   let text = $state(route.text)
   let unresolved = $state<string[]>([])
   let dragFrom: number | null = null
+  let exporting = $state(false)
+  let importError = $state('')
+
+  /** Load a Garmin .fpl or GPX file. Named points are matched to the database when one with that
+   *  id lies within 3 NM of the file's position; anything else stays a lat/long waypoint. */
+  async function importFile() {
+    importError = ''
+    const [file] = await pickFiles('.fpl,.gpx,.xml')
+    if (!file) return
+    try {
+      const pts = parseRouteFile(await file.text())
+      const named = pts.map((p) => p.id).filter((id) => /^[A-Z0-9]{2,5}$/i.test(id))
+      if (named.length) {
+        const res = await api.resolve(named.join(' ').toUpperCase()).catch(() => [])
+        const found = new Map(res.filter((r) => r.place).map((r) => [r.token.toUpperCase(), r.place!]))
+        for (let i = 0; i < pts.length; i++) {
+          const db = found.get(pts[i].id.toUpperCase())
+          if (db && distanceNm(db.lat, db.lon, pts[i].lat, pts[i].lon) < 3) pts[i] = db
+        }
+      }
+      route.replace(pts)
+      fit()
+    } catch (e) {
+      importError = `${file.name}: ${(e as Error).message}`
+    }
+  }
 
   // keep the text box in sync when the route changes elsewhere (map edits)
   $effect(() => {
@@ -79,6 +108,8 @@
 
 <PanelShell title="Route" subtitle={route.waypoints.length >= 2 && log ? `${Math.round(log.totalDist)} NM · ${fmtTime(log.totalTime)} · ${log.tripFuel.toFixed(1)} gal` : 'Type a route or click the map'} width={380}>
   {#snippet actions()}
+    <button class="btn ghost ico" title="Export to FltPlan.com, Garmin .fpl or GPX" onclick={() => (exporting = true)} disabled={!route.waypoints.length} data-tour="route-export"><Share2 size={15} /></button>
+    <button class="btn ghost ico" title="Open a Garmin .fpl or GPX file" onclick={importFile}><FileUp size={15} /></button>
     <button class="btn ghost ico" title="Reverse route" onclick={() => route.reverse()} disabled={route.waypoints.length < 2}><ArrowDownUp size={15} /></button>
     <button class="btn ghost ico" title="Clear route" onclick={() => route.clear()} disabled={!route.waypoints.length}><Trash2 size={15} /></button>
   {/snippet}
@@ -104,6 +135,7 @@
       </button>
     </div>
     {#if unresolved.length}<p class="warn"><TriangleAlert size={13} /> Not found: {unresolved.join(', ')}</p>{/if}
+    {#if importError}<p class="warn"><TriangleAlert size={13} /> {importError}</p>{/if}
     <p class="faint tip">Tip: drag the magenta line to add a waypoint (rubber-band), or drag a waypoint to move it.</p>
   </div>
 
@@ -177,6 +209,8 @@
     <p class="faint small">Winds: {plan.windSource === 'windy' ? 'Windy (GFS)' : plan.windSource === 'open-meteo' ? 'Open-Meteo GFS' : 'loading…'} · Magnetic variation: WMM-2025</p>
   {/if}
 </PanelShell>
+
+{#if exporting}<RouteExport onclose={() => (exporting = false)} />{/if}
 
 <style>
   .entry textarea {

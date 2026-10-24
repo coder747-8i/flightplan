@@ -14,3 +14,7 @@ server/target/
 data/cache/
 data/server.log
 data/settings.json
+/dist/
+pipeline/.tools/
+data/user/
+native/target/

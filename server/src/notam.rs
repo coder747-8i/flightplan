@@ -16,19 +16,19 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new().route("/notams", post(notams))
 }
 
-#[derive(Deserialize)]
-struct NotamReq {
+#[derive(Deserialize, Default)]
+pub struct NotamReq {
     /// airport / facility identifiers (ICAO or FAA)
     #[serde(default)]
-    locations: Vec<String>,
+    pub locations: Vec<String>,
     /// [lon, lat] points to search around (route samples)
     #[serde(default)]
-    points: Vec<[f64; 2]>,
+    pub points: Vec<[f64; 2]>,
     /// radius around each point, NM (max 100)
-    radius: Option<f64>,
+    pub radius: Option<f64>,
     /// ARTCC / FIR identifiers (e.g. ZAB, ZLA)
     #[serde(default)]
-    artccs: Vec<String>,
+    pub artccs: Vec<String>,
 }
 
 async fn query(s: Arc<AppState>, id: String, secret: String, params: Vec<(&'static str, String)>) -> anyhow::Result<Vec<Value>> {
@@ -137,9 +137,14 @@ fn normalise(item: &Value) -> Option<(String, Value)> {
 }
 
 async fn notams(State(s): State<Arc<AppState>>, Json(req): Json<NotamReq>) -> ApiResult<Json<Value>> {
+    Ok(Json(fetch(s, req).await))
+}
+
+/// NOTAMs for a route, merged and de-duplicated: {"configured", "items", "errors"}.
+pub async fn fetch(s: Arc<AppState>, req: NotamReq) -> Value {
     let keys = s.settings.get();
     let (Some(id), Some(secret)) = (keys.notam_id, keys.notam_secret) else {
-        return Ok(Json(json!({"configured": false, "items": []})));
+        return json!({"configured": false, "items": []});
     };
     let radius = req.radius.unwrap_or(25.0).clamp(5.0, 100.0);
     let mut jobs: Vec<Vec<(&'static str, String)>> = Vec::new();
@@ -175,5 +180,5 @@ async fn notams(State(s): State<Arc<AppState>>, Json(req): Json<NotamReq>) -> Ap
     }
     let mut items: Vec<Value> = merged.into_values().collect();
     items.sort_by(|a, b| a["location"].as_str().cmp(&b["location"].as_str()).then(a["category"].as_str().cmp(&b["category"].as_str())));
-    Ok(Json(json!({"configured": true, "items": items, "errors": errors})))
+    json!({"configured": true, "items": items, "errors": errors})
 }

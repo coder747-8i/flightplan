@@ -22,6 +22,7 @@ NAME_RX = (
 CATS = ("airport", "airport_terminal", "aircraft_service", "private_jet_charter", "airline", "aircraft_parts_and_supplies",
         "flight_school", "aircraft_dealer", "airport_lounge")
 
+OUT.parent.mkdir(parents=True, exist_ok=True)
 con = duckdb.connect()
 con.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2';")
 cats = ",".join(f"'{c}'" for c in CATS)

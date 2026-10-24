@@ -1,5 +1,6 @@
 // Aircraft profiles: performance for the navlog, weight & balance data for the loading sheet.
 import { save } from './app.svelte'
+import { api } from '../api'
 
 export interface Station {
   id: string
@@ -46,7 +47,7 @@ export interface Aircraft {
   notes?: string
 }
 
-const uid = () => Math.random().toString(36).slice(2, 10)
+export const uid = () => Math.random().toString(36).slice(2, 10)
 
 // Typical POH figures. Every aircraft differs: always enter your own weighing data.
 export const PRESETS: Omit<Aircraft, 'id' | 'tail' | 'load'>[] = [
@@ -94,6 +95,28 @@ export const PRESETS: Omit<Aircraft, 'id' | 'tail' | 'load'>[] = [
         { id: 'fuel', name: 'Fuel (usable)', arm: 95.0, kind: 'fuel', max: 48 },
       ],
       envelope: [[82.0, 1200], [82.0, 2050], [88.6, 2550], [93.0, 2550], [93.0, 1200]],
+    },
+  },
+  {
+    name: 'Cessna 152',
+    type: 'C152',
+    fuelType: '100LL',
+    lbPerGal: 6,
+    perf: { tas: 95, gph: 6.1, climbFpm: 715, climbTas: 67, climbGph: 7.5, descentFpm: 500, descentTas: 95, descentGph: 5, taxiGal: 0.8, reserveMin: 30, maxXwind: 12 },
+    usableFuel: 24.5,
+    wb: {
+      emptyWeight: 1129,
+      emptyArm: 30.7,
+      maxRamp: 1675,
+      maxTakeoff: 1670,
+      maxLanding: 1670,
+      stations: [
+        { id: 'front', name: 'Pilot & passenger', arm: 39.0, kind: 'seat' },
+        { id: 'bag1', name: 'Baggage area 1', arm: 64.0, kind: 'baggage', max: 120 },
+        { id: 'bag2', name: 'Baggage area 2', arm: 84.0, kind: 'baggage', max: 40 },
+        { id: 'fuel', name: 'Fuel (usable)', arm: 42.0, kind: 'fuel', max: 24.5 },
+      ],
+      envelope: [[31.0, 1100], [31.0, 1350], [32.65, 1670], [36.5, 1670], [36.5, 1100]],
     },
   },
   {
@@ -160,6 +183,22 @@ class AircraftState {
     return a
   }
 
+  /** add (or, with the same id, replace) an aircraft and make it the active one */
+  upsert(a: Aircraft) {
+    const i = this.list.findIndex((x) => x.id === a.id)
+    if (i >= 0) this.list[i] = a
+    else this.list.push(a)
+    this.activeId = a.id
+  }
+
+  duplicate(id: string) {
+    const src = this.list.find((a) => a.id === id)
+    if (!src) return
+    const copy = { ...structuredClone($state.snapshot(src)), id: uid(), tail: '', name: `${src.name} (copy)` }
+    this.list.push(copy)
+    this.activeId = copy.id
+  }
+
   remove(id: string) {
     this.list = this.list.filter((a) => a.id !== id)
     if (this.activeId === id) this.activeId = this.list[0]?.id ?? ''
@@ -168,8 +207,65 @@ class AircraftState {
 
 export const aircraft = new AircraftState()
 
+// The server keeps a copy too (data/user/aircraft.json): it survives a cleared browser and
+// is shared with every device that opens the app. Newest copy wins.
+let savedAt = (() => {
+  try {
+    return Number(localStorage.getItem('fp.aircraft.savedAt') || 0)
+  } catch {
+    return 0
+  }
+})()
+let fromServer = false
+let serverReady = false
+let pushTimer: ReturnType<typeof setTimeout> | undefined
+
+api
+  .userGet<{ list: Aircraft[]; savedAt: number }>('aircraft')
+  .then((doc) => {
+    if (doc && Array.isArray(doc.list) && doc.list.length && doc.savedAt > savedAt) {
+      fromServer = true
+      aircraft.list = doc.list
+      if (!doc.list.some((a) => a.id === aircraft.activeId)) aircraft.activeId = doc.list[0].id
+      savedAt = doc.savedAt
+    } else if (!doc && savedAt) {
+      pushSoon(0)
+    }
+  })
+  .catch(() => {
+    /* older server or offline: localStorage only */
+  })
+  .finally(() => (serverReady = true))
+
+function pushSoon(delay = 800) {
+  clearTimeout(pushTimer)
+  pushTimer = setTimeout(() => {
+    api.userPut('aircraft', { list: $state.snapshot(aircraft.list), savedAt }).catch(() => {})
+  }, delay)
+}
+
 $effect.root(() => {
   $effect(() => save('aircraft', aircraft.list))
+  $effect(() => {
+    JSON.stringify(aircraft.list) // track every nested edit
+    if (fromServer) {
+      fromServer = false
+      try {
+        localStorage.setItem('fp.aircraft.savedAt', String(savedAt))
+      } catch {
+        /* ignore */
+      }
+      return
+    }
+    if (!serverReady) return
+    savedAt = Date.now()
+    try {
+      localStorage.setItem('fp.aircraft.savedAt', String(savedAt))
+    } catch {
+      /* ignore */
+    }
+    pushSoon()
+  })
   $effect(() => {
     try {
       localStorage.setItem('fp.aircraft.active', aircraft.activeId)

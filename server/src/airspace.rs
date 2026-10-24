@@ -59,7 +59,32 @@ impl Volume {
     }
 }
 
+/// One volume, as reported for a point on the chart.
+#[derive(Serialize, Clone, Debug)]
+pub struct VolumeInfo {
+    pub kind: String,
+    pub name: String,
+    pub lo: i64,
+    pub hi: i64,
+    pub lo_agl: bool,
+    pub times: String,
+    /// outline (polygons -> rings -> [lon, lat])
+    pub geom: Vec<Vec<Vec<[f64; 2]>>>,
+}
+
 impl Airspace {
+    /// Every volume containing the point, highest floor first.
+    pub fn at_point(&self, lon: f64, lat: f64) -> Vec<VolumeInfo> {
+        let mut v: Vec<VolumeInfo> = self
+            .vols
+            .iter()
+            .filter(|v| v.contains(lon, lat))
+            .map(|v| VolumeInfo { kind: v.k.clone(), name: v.n.clone(), lo: v.lo, hi: v.hi, lo_agl: v.agl == 1, times: v.t.clone(), geom: v.p.clone() })
+            .collect();
+        v.sort_by(|a, b| b.lo.cmp(&a.lo));
+        v
+    }
+
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let vols: Vec<Volume> = serde_json::from_slice(&std::fs::read(path)?)?;
         tracing::info!("airspace index: {} volumes", vols.len());

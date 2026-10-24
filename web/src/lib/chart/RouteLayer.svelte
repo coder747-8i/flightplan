@@ -12,6 +12,7 @@
   import { variation, deg } from '../nav/navlog'
   import { mapRef } from './mapRef'
   import { DAY, NIGHT } from './palette'
+  import { coordId } from '../io/flightplan'
 
   let map: MLMap | undefined
   let ready = $state(0)
@@ -157,13 +158,7 @@
       return { kind: 'fix', id: pr.id, name: pr.id, detail: pr.vfr ? 'VFR waypoint' : 'Fix', lat, lon }
     }
     const { lng, lat } = e.lngLat
-    const ns = lat >= 0 ? 'N' : 'S'
-    const ew = lng >= 0 ? 'E' : 'W'
-    const fmt = (v: number, w: number) => {
-      const a = Math.abs(v)
-      return `${String(Math.floor(a)).padStart(w, '0')}${String(Math.round((a % 1) * 60) % 60).padStart(2, '0')}`
-    }
-    const id = `${fmt(lat, 2)}${ns}${fmt(lng, 3)}${ew}`
+    const id = coordId(lat, lng)
     return { kind: 'coord', id, name: 'User waypoint', detail: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, lat, lon: lng }
   }
 

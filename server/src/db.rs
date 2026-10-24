@@ -82,6 +82,11 @@ impl Db {
         Ok(Self { conn: Mutex::new(conn) })
     }
 
+    /// Sanity check used when a data pack is installed.
+    pub fn airport_count(&self) -> anyhow::Result<i64> {
+        Ok(self.conn.lock().query_row("SELECT count(*) FROM airport", [], |r| r.get(0))?)
+    }
+
     fn site_for(&self, conn: &Connection, ident: &str) -> rusqlite::Result<Option<String>> {
         let id = ident.trim().to_uppercase();
         conn.query_row(
