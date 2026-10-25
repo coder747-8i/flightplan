@@ -171,10 +171,10 @@ fn ruler_button(app: &mut App, ctx: &egui::Context) {
     let y = if app.altitude_open { 360.0 } else { 58.0 };
     egui::Area::new("ruler-btn".into()).anchor(Align2::RIGHT_TOP, vec2(-12.0, y)).order(egui::Order::Middle).show(ctx, |ui| {
         let pill = glass(&t).fill(if on { t.accent } else { t.surface_solid }).corner_radius(CornerRadius::same(99)).inner_margin(Margin::symmetric(12, 7)).show(ui, |ui| {
-            let label = if on { format!("{}  Measuring · Esc to stop", ph::RULER) } else { format!("{}  Measure", ph::RULER) };
+            let label = if on { format!("{}  Measuring · Space new line · Esc clear", ph::RULER) } else { format!("{}  Measure", ph::RULER) };
             ui.add(egui::Label::new(RichText::new(label).font(theme::semibold(12.5)).color(if on { Color32::WHITE } else { t.text2 })).wrap_mode(egui::TextWrapMode::Extend));
         });
-        let r = pill.response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Measure distance and course (R). Click a start and an end; points snap to airports and navaids.");
+        let r = pill.response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Measure distance and course (R). Click points along a line; Space starts a new line (up to 3); Backspace removes the last point; Esc clears. Points snap to airports and navaids.");
         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Measure"));
         mark(ctx, "ruler", r.rect);
         if r.clicked() {

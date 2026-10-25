@@ -40,14 +40,17 @@ pub struct ChartUi {
     pub ruler: Ruler,
 }
 
-/// The measuring tool: click a start, click an end; the line follows the pointer in between.
+/// The measuring tool: each click adds a point to the current line (the next leg follows the
+/// pointer); Space starts another line, up to three at once (the oldest goes); Backspace
+/// removes the last point; Esc clears, and Esc again closes the tool.
 #[derive(Default)]
 pub struct Ruler {
     pub on: bool,
-    /// (lat, lon, label) of the start and end
-    a: Option<(f64, f64, String)>,
-    b: Option<(f64, f64, String)>,
+    /// lines of (lat, lon, label) points; the last one is being drawn
+    lines: Vec<Vec<(f64, f64, String)>>,
 }
+
+pub const RULER_LINES: usize = 3;
 
 enum RadarTile {
     Loading(Task<Option<egui::ColorImage>>),
@@ -796,16 +799,29 @@ fn ruler_keys(app: &mut App, ui: &egui::Ui) {
         return;
     }
     if ui.input(|i| i.key_pressed(egui::Key::R) && !i.modifiers.any()) {
-        app.chart.ruler.on = !app.chart.ruler.on;
-        app.chart.ruler.a = None;
-        app.chart.ruler.b = None;
+        let on = !app.chart.ruler.on;
+        app.chart.ruler = Ruler { on, ..Default::default() };
     }
-    if app.chart.ruler.on && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        if app.chart.ruler.a.is_some() {
-            app.chart.ruler.a = None;
-            app.chart.ruler.b = None;
+    let r = &mut app.chart.ruler;
+    if !r.on {
+        return;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Space)) && r.lines.last().is_some_and(|l| !l.is_empty()) {
+        r.lines.push(Vec::new());
+        while r.lines.len() > RULER_LINES {
+            r.lines.remove(0);
+        }
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Backspace)) {
+        if let Some(l) = r.lines.last_mut() {
+            l.pop();
+        }
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if r.lines.iter().any(|l| !l.is_empty()) {
+            r.lines.clear();
         } else {
-            app.chart.ruler.on = false;
+            r.on = false;
         }
     }
 }
@@ -815,56 +831,92 @@ fn ruler_click(app: &mut App, proj: &Proj, p: Pos2) {
     let label = if place.kind == Kind::Coord { String::new() } else { place.id.clone() };
     let pt = (place.lat, place.lon, label);
     let r = &mut app.chart.ruler;
-    if r.a.is_none() || r.b.is_some() {
-        r.a = Some(pt);
-        r.b = None;
-    } else {
-        r.b = Some(pt);
+    if r.lines.is_empty() {
+        r.lines.push(Vec::new());
+    }
+    if let Some(l) = r.lines.last_mut() {
+        l.push(pt);
     }
 }
 
-/// The ruler's line, end points and readout: NM / statute miles / km, true and magnetic
-/// course, and the time at the aircraft's cruise speed.
+/// The ruler's lines, points and readouts: each leg's distance and course, and per line the
+/// total in NM / statute miles / km with the time at the aircraft's cruise speed.
 fn draw_ruler(app: &App, ui: &egui::Ui, painter: &Painter, proj: &Proj, hover: Option<Pos2>) {
     let r = &app.chart.ruler;
     if !r.on {
         return;
     }
     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-    let Some((alat, alon, alabel)) = r.a.clone() else { return };
-    let (blat, blon, blabel) = match (&r.b, hover) {
-        (Some(b), _) => b.clone(),
-        (None, Some(h)) => {
-            let (lon, lat) = proj.from_screen(h);
-            (lat, lon, String::new())
-        }
-        _ => return,
+    let night = app.night();
+    let inks = if night {
+        [Color32::from_rgb(240, 240, 240), Color32::from_rgb(110, 170, 255), Color32::from_rgb(255, 120, 200)]
+    } else {
+        [Color32::from_rgb(25, 28, 34), Color32::from_rgb(30, 90, 200), Color32::from_rgb(190, 20, 130)]
     };
-    let pa = proj.to_screen(alon, alat);
-    let pb = proj.to_screen(blon, blat);
-    let ink = if app.night() { Color32::from_rgb(240, 240, 240) } else { Color32::from_rgb(25, 28, 34) };
-    painter.line_segment([pa, pb], Stroke::new(5.0, Color32::WHITE.gamma_multiply(0.9)));
-    painter.extend(Shape::dashed_line(&[pa, pb], Stroke::new(2.5, ink), 10.0, 6.0));
-    for p in [pa, pb] {
-        painter.circle(p, 5.0, Color32::WHITE, Stroke::new(2.5, ink));
+    let tas = app.fleet.active().map(|a| a.perf.tas).filter(|t| *t > 0.0);
+    let n_lines = r.lines.len();
+    for (li, line) in r.lines.iter().enumerate() {
+        let ink = inks[li % inks.len()];
+        let mut pts: Vec<(f64, f64, String)> = line.clone();
+        // the line being drawn follows the pointer
+        if li + 1 == n_lines && !pts.is_empty() {
+            if let Some(h) = hover {
+                let (lon, lat) = proj.from_screen(h);
+                pts.push((lat, lon, String::new()));
+            }
+        }
+        if pts.is_empty() {
+            continue;
+        }
+        let screen: Vec<Pos2> = pts.iter().map(|p| proj.to_screen(p.1, p.0)).collect();
+        if screen.len() >= 2 {
+            painter.add(Shape::line(screen.clone(), Stroke::new(5.0, Color32::WHITE.gamma_multiply(0.9))));
+            painter.extend(Shape::dashed_line(&screen, Stroke::new(2.5, ink), 10.0, 6.0));
+        }
+        for p in &screen {
+            painter.circle(*p, 4.5, Color32::WHITE, Stroke::new(2.5, ink));
+        }
+        // each leg: distance and course at its middle
+        let mut total = 0.0;
+        for k in 1..pts.len() {
+            let (a, b) = (&pts[k - 1], &pts[k]);
+            let nm = distance_nm(a.0, a.1, b.0, b.1);
+            total += nm;
+            if pts.len() > 2 {
+                let tc = bearing(a.0, a.1, b.0, b.1);
+                let mc = tc - variation_now(a.0, a.1);
+                let g = ui.fonts_mut(|f| f.layout_job(single(&format!("{nm:.1} NM  {}°M", deg(mc)), crate::theme::semibold(11.0), ink)));
+                let mid = screen[k - 1] + (screen[k] - screen[k - 1]) * 0.5;
+                halo_text(painter, mid + vec2(6.0, -g.size().y - 4.0), g, Color32::WHITE, 1.5, 0.0);
+            }
+        }
+        if pts.len() < 2 {
+            continue;
+        }
+        // the line's total by its last point
+        let (a, b) = (&pts[0], &pts[pts.len() - 1]);
+        let tc = bearing(a.0, a.1, b.0, b.1);
+        let mc = tc - variation_now(a.0, a.1);
+        let mut text = format!("{total:.1} NM · {:.1} mi · {:.1} km", total * 1.150779, total * 1.852);
+        if pts.len() == 2 {
+            text += &format!("\n{}°T · {}°M", deg(tc), deg(mc));
+        } else {
+            text += &format!("\n{} legs", pts.len() - 1);
+        }
+        if let Some(tas) = tas {
+            text += &format!(" · {} at {} kt", crate::nav::navlog::fmt_time(total / tas * 60.0), tas.round());
+        }
+        let names: Vec<String> = pts.iter().map(|p| p.2.clone()).filter(|s| !s.is_empty()).collect();
+        if names.len() >= 2 {
+            text = format!("{}\n{text}", names.join(" → "));
+        }
+        let galley = ui.fonts_mut(|f| f.layout_job(single(&text, crate::theme::semibold(12.0), ink)));
+        let end = *screen.last().unwrap_or(&screen[0]);
+        let rect = Rect::from_min_size(end + vec2(14.0, 8.0), galley.size() + vec2(16.0, 10.0));
+        painter.rect_filled(rect, 8.0, if night { Color32::from_rgb(30, 34, 40) } else { Color32::WHITE });
+        painter.rect_stroke(rect, 8.0, Stroke::new(1.5, ink.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        painter.galley(rect.min + vec2(8.0, 5.0), galley, ink);
     }
-    let nm = distance_nm(alat, alon, blat, blon);
-    let tc = bearing(alat, alon, blat, blon);
-    let mc = tc - variation_now(alat, alon);
-    let mut text = format!("{nm:.1} NM · {:.1} mi · {:.1} km\n{}°T · {}°M", nm * 1.150779, nm * 1.852, deg(tc), deg(mc));
-    if let Some(ac) = app.fleet.active().filter(|a| a.perf.tas > 0.0) {
-        text += &format!(" · {} at {} kt", crate::nav::navlog::fmt_time(nm / ac.perf.tas * 60.0), ac.perf.tas.round());
-    }
-    if !alabel.is_empty() || !blabel.is_empty() {
-        let name = |s: &str| if s.is_empty() { "point".to_string() } else { s.to_string() };
-        text = format!("{} → {}\n{text}", name(&alabel), name(&blabel));
-    }
-    let galley = ui.fonts_mut(|f| f.layout_job(single(&text, crate::theme::semibold(12.0), ink)));
-    let mid = pa + (pb - pa) * 0.5;
-    let rect = Rect::from_min_size(mid + vec2(12.0, -galley.size().y - 12.0), galley.size() + vec2(16.0, 10.0));
-    painter.rect_filled(rect, 8.0, if app.night() { Color32::from_rgb(30, 34, 40) } else { Color32::WHITE });
-    painter.rect_stroke(rect, 8.0, Stroke::new(1.0, ink.gamma_multiply(0.3)), egui::StrokeKind::Inside);
-    painter.galley(rect.min + vec2(8.0, 5.0), galley, ink);
 }
 
 fn draw_scale(app: &App, painter: &Painter, proj: &Proj) {

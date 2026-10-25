@@ -28,7 +28,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
         );
         section(ui, &t, "Shortcuts");
         egui::Grid::new("keys").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
-            for (k, v) in [("/", "Search airports, navaids and fixes"), ("Enter", "Load the route typed in the Route panel"), ("Shift+Enter", "Add a search result to the route"), ("Scroll / pinch", "Zoom the chart"), ("Double-click", "Zoom in"), ("R", "Measure distance and course (ruler); Esc clears it"), ("Esc", "Close dialogs and the tour")] {
+            for (k, v) in [("/", "Search airports, navaids and fixes"), ("Enter", "Load the route typed in the Route panel"), ("Shift+Enter", "Add a search result to the route"), ("Scroll / pinch", "Zoom the chart"), ("Double-click", "Zoom in"), ("R", "Ruler: click points to measure; Space starts a new line (up to 3); Backspace undoes a point; Esc clears"), ("Esc", "Close dialogs and the tour")] {
                 ui.label(RichText::new(k).font(crate::theme::mono(11.5)));
                 ui.label(RichText::new(v).size(12.5));
                 ui.end_row();
