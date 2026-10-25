@@ -48,6 +48,12 @@ fn main() {
                 let key = egui::Key::from_name(&arg).unwrap_or(egui::Key::Enter);
                 h.key_press(key);
             }
+            // ctrl <Key> / ctrlshift <Key>
+            "ctrl" | "ctrlshift" => {
+                let key = egui::Key::from_name(&arg).unwrap_or(egui::Key::Z);
+                let m = if a == "ctrl" { egui::Modifiers::COMMAND } else { egui::Modifiers::COMMAND | egui::Modifiers::SHIFT };
+                h.key_press_modifiers(m, key);
+            }
             "clickat" if nums.len() == 2 => {
                 let p = egui::pos2(nums[0], nums[1]);
                 h.hover_at(p);

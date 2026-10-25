@@ -292,7 +292,8 @@ fn chart(app: &mut App, ui: &mut egui::Ui, show_e: bool) {
     // ---- interaction ----
     let drag_id = egui::Id::new("profile-drag");
     let mut dragging: bool = ui.data(|d| d.get_temp(drag_id)).unwrap_or(false);
-    if resp.drag_started() {
+    let locked = app.saved.locked;
+    if resp.drag_started() && !locked {
         if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
             dragging = (p.y - y(cruise)).abs() < 12.0;
             ui.data_mut(|d| d.insert_temp(drag_id, dragging));
@@ -302,7 +303,7 @@ fn chart(app: &mut App, ui: &mut egui::Ui, show_e: bool) {
         if p.x >= rect.left() + pad.0 && p.x <= rect.right() - pad.1 {
             app.plan.hover = Some((d_at(p.x), true));
         }
-        if (p.y - y(cruise)).abs() < 12.0 || dragging {
+        if !locked && ((p.y - y(cruise)).abs() < 12.0 || dragging) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
         }
         if dragging && resp.dragged() {

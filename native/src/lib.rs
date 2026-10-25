@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod backend;
+pub mod history;
 pub mod io;
 pub mod localbuild;
 pub mod map;

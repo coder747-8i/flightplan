@@ -62,17 +62,24 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
             })
             .response
             .on_hover_text("Export aircraft");
-            if ui.add(egui::Button::new(RichText::new(ph::UPLOAD_SIMPLE).size(15.0)).frame(false)).on_hover_text("Import aircraft files").clicked() {
+            if ui.add_enabled(!app.saved.locked, egui::Button::new(RichText::new(ph::UPLOAD_SIMPLE).size(15.0)).frame(false)).on_hover_text("Import aircraft files").clicked() {
                 act.set(Some("import"));
             }
-            let r = ui.add(egui::Button::new(RichText::new(ph::PLUS).size(16.0)).frame(false)).on_hover_text("New aircraft (guided)");
+            let r = ui.add_enabled(!app.saved.locked, egui::Button::new(RichText::new(ph::PLUS).size(16.0)).frame(false)).on_hover_text("New aircraft (guided)");
             mark(ui.ctx(), "aircraft-new", r.rect);
             if r.clicked() {
                 act.set(Some("new"));
             }
             false
         },
-        |ui, app| body(app, ui, &act),
+        |ui, app| {
+            // view only: the aircraft and its loading can't change
+            if app.saved.locked {
+                widgets::para(ui, format!("{}  View only. Press L or the lock in the rail to edit.", ph::LOCK_SIMPLE), t.text2, 11.5);
+                ui.disable();
+            }
+            body(app, ui, &act)
+        },
     );
     match act.get() {
         Some("export1") => export(app, false),

@@ -97,6 +97,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let mut close = false;
     let mut route_add: Option<(Place, bool)> = None;
     let mut stop_toggle: Option<usize> = None;
+    let locked = app.saved.locked;
     // where this airport sits in the route (fuel stops are the airports in between)
     let n_wp = app.saved.route.waypoints.len();
     let stops_at: Vec<(usize, String, bool)> = app.saved.route.waypoints.iter().enumerate().filter(|(i, w)| *i > 0 && *i + 1 < n_wp && w.kind == Kind::Airport).map(|(i, w)| (i, w.id.clone(), w.fuel_stop)).collect();
@@ -155,6 +156,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     let place = Place { kind: Kind::Airport, id: code.clone(), name: s(&d["name"]), detail: format!("{}, {}", s(&d["city"]), s(&d["state"])), lat: d["lat"].as_f64().unwrap_or(0.0), lon: d["lon"].as_f64().unwrap_or(0.0) };
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
+                        if locked {
+                            ui.disable();
+                        }
                         if widgets::primary(ui, &t, format!("{}  Add to route", ph::PLUS)).clicked() {
                             route_add = Some((place.clone(), false));
                         }

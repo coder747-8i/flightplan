@@ -40,6 +40,9 @@ pub struct Saved {
     pub view: [f64; 3],
     pub profile_open: bool,
     pub raw_wx: bool,
+    /// view-only mode: the plan can't be changed by accident
+    #[serde(default)]
+    pub locked: bool,
     pub route: Route,
     /// personal minimums for the go / no-go call
     pub minimums: crate::nav::verdict::Minimums,
@@ -57,6 +60,7 @@ impl Default for Saved {
             view: [-112.1, 33.5, 8.0],
             profile_open: true,
             raw_wx: false,
+            locked: false,
             route: Route::default(),
             minimums: Default::default(),
         }

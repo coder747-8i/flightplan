@@ -75,11 +75,18 @@ fn rail(app: &mut App, ctx: &egui::Context) {
                     app.briefing = Some(super::briefing::Briefing::new(app));
                 }
                 let used = ui.min_rect().height();
-                ui.add_space((screen.height() - 44.0 - used - 3.0 * 52.0).max(4.0));
+                ui.add_space((screen.height() - 44.0 - used - 4.0 * 52.0).max(4.0));
                 let r = rail_button(ui, &t, ph::GEAR_SIX, "Settings", app.panel == Panel::Settings);
                 mark(ctx, "rail-settings", r.rect);
                 if r.clicked() {
                     app.panel = if app.panel == Panel::Settings { Panel::None } else { Panel::Settings };
+                }
+                let locked = app.saved.locked;
+                let r = rail_button(ui, &t, if locked { ph::LOCK_SIMPLE } else { ph::LOCK_SIMPLE_OPEN }, if locked { "Locked" } else { "Edit" }, locked).on_hover_text(if locked { "View only: the plan can't be changed. Click (or L) to edit." } else { "Editing. Click (or L) to lock the plan for viewing." });
+                mark(ctx, "rail-lock", r.rect);
+                if r.clicked() {
+                    app.saved.locked = !locked;
+                    app.toast(if app.saved.locked { "View only: the plan is locked (L to edit)" } else { "Editing on" });
                 }
                 let night = app.night();
                 if rail_button(ui, &t, if night { ph::SUN } else { ph::MOON }, if night { "Day" } else { "Night" }, false).on_hover_text("Day / night chart").clicked() {

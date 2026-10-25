@@ -184,7 +184,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let proj0 = app.map.proj(rect);
 
     // ---- route drag start: a waypoint (move) or the line (insert) ----
-    if resp.drag_started_by(egui::PointerButton::Primary) && !app.chart.ruler.on {
+    if resp.drag_started_by(egui::PointerButton::Primary) && !app.chart.ruler.on && !app.saved.locked {
         let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or_default();
         let w = &app.saved.route.waypoints;
         let node = w.iter().position(|p| proj0.to_screen(p.lon, p.lat).distance(origin) < 11.0);
@@ -223,7 +223,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         (lat, lon)
     });
     if let Some(p) = hover {
-        if app.chart.drag.is_none() && app.saved.route.waypoints.len() >= 2 {
+        if app.chart.drag.is_none() && app.saved.route.waypoints.len() >= 2 && !app.saved.locked {
             let line = route_screen(app, &proj);
             let on_node = app.saved.route.waypoints.iter().any(|w| proj.to_screen(w.lon, w.lat).distance(p) < 11.0);
             if on_node {
@@ -310,7 +310,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn click(app: &mut App, proj: &Proj, p: Pos2) {
-    if app.saved.route.editing {
+    if app.saved.route.editing && !app.saved.locked {
         let place = snap(app, proj, p);
         app.saved.route.add(place, None);
         return;

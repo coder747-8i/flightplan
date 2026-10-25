@@ -111,6 +111,7 @@ pub struct App {
     /// the briefing is capturing the chart: draw nothing but the chart
     pub capturing: bool,
     pub local_build: crate::localbuild::LocalBuild,
+    pub history: crate::history::History,
 }
 
 fn hash_of<T: serde::Serialize>(v: &T) -> u64 {
@@ -183,6 +184,7 @@ impl App {
             screenshot: ui::shot::Shot::from_env(),
             capturing: false,
             local_build: Default::default(),
+            history: Default::default(),
         };
         app.refresh_keys();
         Ok(app)
@@ -205,6 +207,50 @@ impl App {
         self.saved.night = night;
         self.palette = if night { style::night() } else { style::day() };
         self.t = theme::tokens(night);
+    }
+
+    fn snap(&self) -> crate::history::Snap {
+        crate::history::Snap { route: self.saved.route.clone(), fleet: self.fleet.list.clone(), active: self.fleet.active.clone() }
+    }
+
+    fn restore(&mut self, s: crate::history::Snap) {
+        // a new rev only when the geometry changed (that refetches the profile)
+        let geometry_changed = s.route.path() != self.saved.route.path();
+        let rev = self.saved.route.rev;
+        self.saved.route = s.route;
+        self.saved.route.editing = false;
+        self.saved.route.rev = if geometry_changed { rev + 1 } else { rev };
+        self.fleet.list = s.fleet;
+        self.fleet.active = s.active;
+    }
+
+    /// Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y); text fields keep their own undo while typing.
+    fn undo_keys(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let (undo, redo) = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            let z = i.key_pressed(egui::Key::Z);
+            (cmd && z && !i.modifiers.shift, cmd && ((z && i.modifiers.shift) || i.key_pressed(egui::Key::Y)))
+        });
+        if undo {
+            match self.history.undo(self.snap()) {
+                Some(s) => {
+                    self.restore(s);
+                    self.toast("Undone");
+                }
+                None => self.toast("Nothing to undo"),
+            }
+        } else if redo {
+            match self.history.redo(self.snap()) {
+                Some(s) => {
+                    self.restore(s);
+                    self.toast("Redone");
+                }
+                None => self.toast("Nothing to redo"),
+            }
+        }
     }
 
     /// Save the current route as a named plan (replacing one with the same name).
@@ -406,6 +452,13 @@ impl eframe::App for App {
                 ui::widgets::toast(ctx, &self.t, &msg);
                 ctx.request_repaint_after(Duration::from_millis(500));
             }
+        }
+        self.undo_keys(ctx);
+        let snap = self.snap();
+        self.history.observe(snap);
+        if ctx.input(|i| i.key_pressed(egui::Key::L) && !i.modifiers.any()) && !ctx.egui_wants_keyboard_input() {
+            self.saved.locked = !self.saved.locked;
+            self.toast(if self.saved.locked { "View only: the plan is locked (L to edit)" } else { "Editing on" });
         }
         self.autosave();
         if let Some(mut s) = self.screenshot.take() {
