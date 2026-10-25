@@ -80,7 +80,7 @@ There are two ways to make a pack:
 - **Export** (Route panel, share icon), with nothing filed with the FAA:
   - **FltPlan Go**: scan the QR code of the route with your iPad or iPhone and paste the route
     into a new FltPlan Go plan. Airports with a three-character FAA id get FltPlan's K prefix
-    (C80 → KC80) and lat/long points go in as coordinates (3430N11230W). See
+    (C80 → KC80) and lat/long points go in as coordinates (3430N/11230W). See
     [docs/fltplan-go.md](docs/fltplan-go.md).
   - **FltPlan.com** form fields, ready to copy. Save the plan rather than filing it, and it
     syncs to FltPlan Go.

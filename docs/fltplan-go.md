@@ -25,7 +25,7 @@ what the app does today.
    This is the quickest path that involves no account automation and nothing sent to the FAA.
 2. **FltPlan identifiers.** Lower-48 airports with a three-character FAA id get the K prefix
    FltPlan expects (C80 → KC80, SDL → KSDL; Alaska and Hawaii keep their FAA id), and lat/long
-   points are written as coordinates (3430N11230W). The KML export still carries the points
+   points are written as coordinates (3430N/11230W). The KML export still carries the points
    for Google Earth or FltPlan Go custom waypoints if wanted.
 3. **FltPlan.com form fields**, each ready to copy: departure, destination, route, altitude
    (hundreds of feet, or FL), aircraft ID and type, TAS, ETE and fuel on board. Press *Save*,

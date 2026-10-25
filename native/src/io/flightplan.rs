@@ -12,10 +12,22 @@ fn route_id(p: &Place) -> String {
     if p.kind == Kind::Coord { coord_id(p.lat, p.lon) } else { p.id.to_uppercase() }
 }
 
+/// A lat/long the way FltPlan takes it: 3430N/11230W.
+pub fn fltplan_coord(lat: f64, lon: f64) -> String {
+    let c = coord_id(lat, lon);
+    match c.find(['N', 'S']) {
+        Some(i) => format!("{}/{}", &c[..=i], &c[i + 1..]),
+        None => c,
+    }
+}
+
 /// The identifier FltPlan (.com and Go) knows a point by: lower-48 airports with a three-
-/// character FAA id get the K prefix (C80 -> KC80, SDL -> KSDL); lat/longs as 3430N11230W.
+/// character FAA id get the K prefix (C80 -> KC80, SDL -> KSDL); lat/longs as 3430N/11230W.
 /// Alaska and Hawaii airports keep their FAA id (their ICAO prefixes are PA / PH, not K).
 pub fn fltplan_id(p: &Place) -> String {
+    if p.kind == Kind::Coord {
+        return fltplan_coord(p.lat, p.lon);
+    }
     let id = route_id(p);
     let lower48 = p.lat > 24.0 && p.lat < 50.0 && p.lon > -125.5 && p.lon < -66.0;
     if p.kind == Kind::Airport && id.len() == 3 && id.chars().all(|c| c.is_ascii_alphanumeric()) && lower48 {
@@ -80,7 +92,7 @@ pub fn fltplan_fields(wps: &[&Place], cruise: f64, ac: Option<&Aircraft>, ete_mi
 }
 
 /// FltPlan Go: the route string FltPlan understands (K-prefixed airports, lat/longs as
-/// coordinates), plus the lat/long points for an optional KML of custom waypoints.
+/// 3430N/11230W), plus the lat/long points for an optional KML of custom waypoints.
 pub struct GoRoute {
     pub route: String,
     /// (name, lat, lon) of the points that need importing
@@ -88,8 +100,8 @@ pub struct GoRoute {
 }
 
 pub fn fltplan_go(wps: &[&Place]) -> GoRoute {
-    // lat/longs go in as coordinates (3430N11230W), which FltPlan reads directly
-    let custom: Vec<(String, f64, f64)> = wps.iter().filter(|p| p.kind == Kind::Coord).map(|p| (coord_id(p.lat, p.lon), p.lat, p.lon)).collect();
+    // lat/longs go in as coordinates (3430N/11230W), which FltPlan reads directly
+    let custom: Vec<(String, f64, f64)> = wps.iter().filter(|p| p.kind == Kind::Coord).map(|p| (fltplan_coord(p.lat, p.lon), p.lat, p.lon)).collect();
     GoRoute { route: crate::model::place::compact_ids(wps, fltplan_id).join(" "), custom }
 }
 
@@ -277,10 +289,10 @@ mod tests {
         let c = p(Kind::Coord, "3430N11230W", 34.5, -112.5);
         let b = p(Kind::Airport, "KPRC", 34.65, -112.42);
         let g = fltplan_go(&[&a, &c, &b]);
-        assert_eq!(g.route, "KSDL 3430N11230W KPRC");
+        assert_eq!(g.route, "KSDL 3430N/11230W KPRC");
         assert_eq!(g.custom.len(), 1);
         let kml = to_kml(&g.custom, &[&a, &c, &b], "KSDL to KPRC");
-        assert!(kml.contains("<name>3430N11230W</name>") && kml.contains("-112.500000,34.500000,0") && kml.contains("<LineString>"));
+        assert!(kml.contains("<name>3430N/11230W</name>") && kml.contains("-112.500000,34.500000,0") && kml.contains("<LineString>"));
         // FAA ids get the K prefix, Alaska doesn't
         let c80 = p(Kind::Airport, "C80", 41.0, -88.0);
         let ak = p(Kind::Airport, "Z95", 61.0, -150.0);
@@ -298,7 +310,7 @@ mod tests {
         let gpx = parse_route_file(&to_gpx(&refs, "x")).unwrap();
         assert_eq!(gpx.len(), 4);
         let f = fltplan_fields(&refs, 6500.0, None, Some(61.0));
-        assert_eq!(f.route, "DRK 3430N11230W");
+        assert_eq!(f.route, "DRK 3430N/11230W");
         assert_eq!(f.altitude, "065");
         assert_eq!(f.ete, "1:01");
     }

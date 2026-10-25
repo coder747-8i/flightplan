@@ -96,7 +96,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) -> bool {
                         });
                     });
                     if !go.custom.is_empty() {
-                        faint(ui, &t, "Lat/long points are written as coordinates (3430N11230W).");
+                        faint(ui, &t, "Lat/long points are written as coordinates (3430N/11230W).");
                     }
                 });
             });
