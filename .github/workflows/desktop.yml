@@ -1,6 +1,7 @@
-# Desktop installers for Windows, macOS and Linux.
-# Every run uploads the installers as workflow artifacts; pushing a tag like v0.2.0 also
-# attaches them to a draft GitHub release.
+# Native desktop app (Rust + egui) for Linux, macOS and Windows.
+# Every run uploads the packages as workflow artifacts; pushing a tag like v0.2.0 also
+# attaches them to a draft GitHub release. The builds aren't code-signed: Windows SmartScreen
+# and macOS Gatekeeper warn on first open (macOS: right-click the app → Open).
 name: Desktop app
 
 on:
@@ -18,66 +19,115 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04
-            name: linux
-            args: ''
+            name: linux-x86_64
           - os: windows-latest
-            name: windows
-            args: ''
+            name: windows-x86_64
           - os: macos-latest
-            name: macos
-            args: --target universal-apple-darwin
+            name: macos-universal
     runs-on: ${{ matrix.os }}
-    env:
-      # optional repository variable: where the setup screen downloads chart data from
-      FP_DATA_URL: ${{ vars.FP_DATA_URL }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Linux build dependencies
-        if: matrix.name == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            desktop/package-lock.json
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.name == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - uses: swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: desktop/src-tauri
+          workspaces: native
 
-      - name: Build
-        working-directory: desktop
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
-          npm ci
-          npx tauri build ${{ matrix.args }}
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev
 
-      - name: Collect installers
+      - name: Test
+        working-directory: native
+        run: cargo test --locked --lib
+
+      - name: Build (Linux / Windows)
+        if: runner.os != 'macOS'
+        working-directory: native
+        run: cargo build --release --locked
+
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        working-directory: native
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p target/release
+          lipo -create -output target/release/flightplan \
+            target/aarch64-apple-darwin/release/flightplan target/x86_64-apple-darwin/release/flightplan
+
+      - name: Package
         shell: bash
         run: |
-          mkdir -p out
-          find desktop/src-tauri/target -path '*/release/bundle/*' -type f \
-            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' -o -name '*.dmg' \) \
-            -exec cp {} out/ \;
-          ls -la out
+          version="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = tag ] || version="$(grep -m1 '^version' native/Cargo.toml | cut -d'"' -f2)-${GITHUB_SHA::7}"
+          out="Flightplan-$version-${{ matrix.name }}"
+          mkdir -p dist
+          case "$RUNNER_OS" in
+            Linux)
+              mkdir -p "$out"
+              cp native/target/release/flightplan "$out/"
+              cp native/assets/icons/128x128@2x.png "$out/flightplan.png"
+              cat > "$out/flightplan.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=Flightplan
+          Comment=Flight planner: chart, route, weather, go / no-go
+          Exec=flightplan
+          Icon=flightplan
+          Categories=Utility;Education;
+          StartupWMClass=io.github.coder747_8i.flightplan
+          EOF
+              cp LICENSE README.md "$out/"
+              tar -czf "dist/$out.tar.gz" "$out"
+              ;;
+            Windows)
+              mkdir -p "$out"
+              cp native/target/release/flightplan.exe "$out/Flightplan.exe"
+              cp LICENSE README.md "$out/"
+              7z a "dist/$out.zip" "$out" > /dev/null
+              ;;
+            macOS)
+              app="$out/Flightplan.app/Contents"
+              mkdir -p "$app/MacOS" "$app/Resources"
+              cp native/target/release/flightplan "$app/MacOS/Flightplan"
+              cp native/assets/icons/icon.icns "$app/Resources/Flightplan.icns"
+              cat > "$app/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Flightplan</string>
+            <key>CFBundleDisplayName</key><string>Flightplan</string>
+            <key>CFBundleIdentifier</key><string>io.github.coder747-8i.Flightplan</string>
+            <key>CFBundleVersion</key><string>$version</string>
+            <key>CFBundleShortVersionString</key><string>${version%%-*}</string>
+            <key>CFBundleExecutable</key><string>Flightplan</string>
+            <key>CFBundleIconFile</key><string>Flightplan</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          EOF
+              cp LICENSE README.md "$out/"
+              hdiutil create -volname Flightplan -srcfolder "$out" -ov -format UDZO "dist/$out.dmg"
+              ;;
+          esac
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: flightplan-${{ matrix.name }}
-          path: out/*
+          name: Flightplan-${{ matrix.name }}
+          path: dist/*
 
-      - name: Attach to draft release
+      - name: Attach to a draft release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: out/*
+          files: dist/*

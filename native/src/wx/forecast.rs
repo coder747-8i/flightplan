@@ -452,6 +452,8 @@ pub struct EnRoute {
     pub icing: Option<(f64, f64)>,
     /// worst visibility (SM) and where
     pub min_vis: Option<(f64, f64)>,
+    /// how many samples are under 1 SM
+    pub vis_under_1: usize,
     /// mostly low overcast points (fraction of samples with >= 85% low cloud)
     pub low_cloud_frac: f64,
 }
@@ -519,6 +521,9 @@ pub fn en_route(points: &[ModelPoint], cruise_ft: f64, eta: impl Fn(f64) -> i64)
         if let Some(&v) = p.vis_sm.get(i) {
             if e.min_vis.is_none_or(|(m, _)| v < m) {
                 e.min_vis = Some((v, p.d));
+            }
+            if v < 1.0 {
+                e.vis_under_1 += 1;
             }
         }
         if p.cloud_low.get(i).is_some_and(|c| *c >= 85.0) {

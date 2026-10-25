@@ -79,6 +79,31 @@ pub fn outer_rings(g: &Value) -> Vec<Vec<[f64; 2]>> {
     }
 }
 
+/// The days a TFR covers, from FAA titles like "City, ST, Friday, October 23, 2026 through
+/// Sunday, October 25, 2026 Local". None when the title has no dates (permanent TFRs, or ones
+/// whose times are only in the NOTAM text). A lone date already in the past is treated as
+/// unknown: some long-standing TFRs carry their issue date.
+pub fn tfr_days(title: &str, now: DateTime<Utc>) -> Option<(chrono::NaiveDate, chrono::NaiveDate)> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), ([A-Z][a-z]+) (\d{1,2}), (\d{4})").unwrap());
+    let dates: Vec<chrono::NaiveDate> = re.captures_iter(title).filter_map(|c| chrono::NaiveDate::parse_from_str(&format!("{} {} {}", &c[1], &c[2], &c[3]), "%B %d %Y").ok()).collect();
+    match dates.as_slice() {
+        [] => None,
+        [d] if *d < now.date_naive() - Duration::days(2) => None,
+        [d] => Some((*d, *d)),
+        [a, .., b] => Some((*a, *b)),
+    }
+}
+
+/// Whether a TFR with these days could be in effect at `t` (12 h slack covers US time zones
+/// and "Local" vs "UTC" titles).
+pub fn tfr_covers(days: Option<(chrono::NaiveDate, chrono::NaiveDate)>, t: DateTime<Utc>) -> bool {
+    let Some((a, b)) = days else { return true };
+    let start = a.and_hms_opt(0, 0, 0).map(|d| d.and_utc() - Duration::hours(12));
+    let end = b.and_hms_opt(23, 59, 59).map(|d| d.and_utc() + Duration::hours(12));
+    start.is_none_or(|s| t >= s) && end.is_none_or(|e| t <= e)
+}
+
 fn lateral(h: &HazardInput, total: f64) -> Vec<Hazard> {
     let mut out = Vec::new();
     let samples = &h.profile.samples;
@@ -105,7 +130,14 @@ fn lateral(h: &HazardInput, total: f64) -> Vec<Hazard> {
             }
         }
     }
+    let total_min = h.log.map(|l| l.total_time).unwrap_or(0.0);
     for (id, p, d) in tfr_hits {
+        // dated TFRs only count if they cover the time you'd be there
+        let when = h.departure + Duration::milliseconds((total_min * 60_000.0 * d / total.max(1.0)) as i64);
+        let days = tfr_days(&str_of(&p["title"]), Utc::now()).or_else(|| tfr_days(&str_of(&p["description"]), Utc::now()));
+        if !tfr_covers(days, when) {
+            continue;
+        }
         let ty = str_of(&p["type"]);
         out.push(Hazard {
             level: Level::Warning,
@@ -118,7 +150,6 @@ fn lateral(h: &HazardInput, total: f64) -> Vec<Hazard> {
 
     // ---- AIRMET / SIGMET / G-AIRMET ----
     let now = Utc::now().timestamp() as f64;
-    let total_min = h.log.map(|l| l.total_time).unwrap_or(0.0);
     let eta_at = |d: f64| h.departure.timestamp() as f64 + total_min * 60.0 * d / total.max(1.0);
     for sg in h.sigmets {
         let ring = ring_of(&sg["coords"]);
@@ -130,11 +161,10 @@ fn lateral(h: &HazardInput, total: f64) -> Vec<Hazard> {
             continue;
         }
         let Some(s) = samples.iter().find(|x| b.contains(x.lon, x.lat) && in_ring(x.lon, x.lat, &ring)) else { continue };
-        let t = eta_at(s.d);
-        if let Some(to) = sg["validTimeTo"].as_f64() {
-            if to < t.min(now) {
-                continue;
-            }
+        // it has to be in force when you get there (and not already over)
+        let t = eta_at(s.d).max(now);
+        if sg["validTimeTo"].as_f64().is_some_and(|to| to < t) || sg["validTimeFrom"].as_f64().is_some_and(|from| from > t + 3600.0) {
+            continue;
         }
         let hazard = str_of(&sg["hazard"]);
         let ty = str_of(&sg["airSigmetType"]);
@@ -162,7 +192,14 @@ fn lateral(h: &HazardInput, total: f64) -> Vec<Hazard> {
         if !b.overlaps(&route_box) {
             continue;
         }
+        // each G-AIRMET is a snapshot valid around `validTime` until the product expires
+        let valid = g["validTime"].as_str().and_then(|v| DateTime::parse_from_rfc3339(v).ok()).map(|d| d.timestamp() as f64);
+        let expires = g["expireTime"].as_f64();
         if let Some(s) = samples.iter().find(|x| b.contains(x.lon, x.lat) && in_ring(x.lon, x.lat, &ring)) {
+            let t = eta_at(s.d).max(now);
+            if expires.is_some_and(|e| t > e) || valid.is_some_and(|v| t < v - 3.0 * 3600.0) {
+                continue;
+            }
             g_hits.insert(hz, s.d);
         }
     }
@@ -310,4 +347,24 @@ pub fn analyze(h: &HazardInput) -> Vec<Hazard> {
 
     out.sort_by(|a, b| a.level.cmp(&b.level).then(a.at.unwrap_or(0.0).total_cmp(&b.at.unwrap_or(0.0))));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn tfr_dates_from_titles() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 25, 5, 0, 0).unwrap();
+        let d = |y, m, dd| chrono::NaiveDate::from_ymd_opt(y, m, dd).unwrap();
+        assert_eq!(tfr_days("RALEIGH, NC, Thursday, October 15, 2026 through Sunday, October 25, 2026 Local", now), Some((d(2026, 10, 15), d(2026, 10, 25))));
+        assert_eq!(tfr_days("SELFRIDGE ANGB, MI, Sunday, October 25, 2026 Local", now), Some((d(2026, 10, 25), d(2026, 10, 25))));
+        assert_eq!(tfr_days("South Padre Island, TX, Tuesday, May 6, 2025 Local", now), None, "old lone date: unknown");
+        assert_eq!(tfr_days("Key West, FL", now), None);
+        let sunday = tfr_days("SELFRIDGE ANGB, MI, Sunday, October 25, 2026 Local", now);
+        assert!(tfr_covers(sunday, Utc.with_ymd_and_hms(2026, 10, 25, 18, 0, 0).unwrap()));
+        assert!(!tfr_covers(sunday, Utc.with_ymd_and_hms(2026, 10, 27, 18, 0, 0).unwrap()));
+        assert!(tfr_covers(None, now));
+    }
 }

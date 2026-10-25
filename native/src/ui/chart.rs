@@ -559,10 +559,17 @@ fn draw_advisories(app: &App, painter: &Painter, proj: &Proj) {
     }
     if app.saved.wx.tfr {
         let red = Color32::from_rgb(0xd2, 0x3a, 0x3a);
+        let when = app.saved.route.departure_time();
+        let now = chrono::Utc::now();
         for f in app.wx.tfrs["features"].as_array().into_iter().flatten() {
+            // TFRs not in effect at the timeline's time fade back
+            let pr = &f["properties"];
+            let days = crate::nav::hazards::tfr_days(&str_of(&pr["title"]), now).or_else(|| crate::nav::hazards::tfr_days(&str_of(&pr["description"]), now));
+            let active = crate::nav::hazards::tfr_covers(days, when);
+            let c = if active { red } else { red.gamma_multiply(0.35) };
             for ring in outer_rings(&f["geometry"]) {
-                polygon(painter, proj, std::slice::from_ref(&ring), red.gamma_multiply(0.16), Stroke::new(2.2, red), Some((5.0, 3.0)));
-                if proj.zoom >= 6.0 && !ring.is_empty() {
+                polygon(painter, proj, std::slice::from_ref(&ring), c.gamma_multiply(if active { 0.16 } else { 0.06 }), Stroke::new(if active { 2.2 } else { 1.2 }, c), Some((5.0, 3.0)));
+                if active && proj.zoom >= 6.0 && !ring.is_empty() {
                     let cx = ring.iter().map(|p| p[0]).sum::<f64>() / ring.len() as f64;
                     let cy = ring.iter().map(|p| p[1]).sum::<f64>() / ring.len() as f64;
                     let g = painter.ctx().fonts_mut(|fo| fo.layout_job(single(&format!("TFR {}", str_of(&f["properties"]["notam"])), fonts.bold(11.0), red)));

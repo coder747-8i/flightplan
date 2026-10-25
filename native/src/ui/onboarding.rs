@@ -69,13 +69,13 @@ const SLIDES: [Slide; 6] = [
     },
     Slide {
         icon: ph::CLOUD_SUN,
-        title: "Weather and hazards",
+        title: "Weather and go / no-go",
         points: [
-            "Radar, METARs, TAFs, PIREPs, AIRMETs/SIGMETs, G-AIRMETs, TFRs and winds aloft on the chart.",
-            "Coded weather is decoded into plain English (switch to raw any time).",
-            "The hazard list flags airspace incursions, terrain, TFRs, crosswinds and fuel.",
+            "Drag the timeline under the chart to plan up to five days ahead: radar turns into forecast radar and winds, TAFs and model forecasts follow.",
+            "With a route, you get a green, yellow or red call for that time against your personal minimums, with the reasons.",
+            "The timeline shows the call for every 3 hours, so the green stretches are your windows to fly.",
         ],
-        tip: "Add a Windy point-forecast key for Windy's winds aloft in the navlog.",
+        tip: "Set your personal minimums under Settings.",
     },
     Slide {
         icon: ph::AIRPLANE_TILT,
@@ -89,10 +89,10 @@ const SLIDES: [Slide; 6] = [
     },
     Slide {
         icon: ph::SHARE_NETWORK,
-        title: "Brief and file",
+        title: "Brief and export",
         points: [
-            "The briefing gathers route, navlog, weather, NOTAMs and W&B on one page you can save as PDF and print.",
-            "Export the route to FltPlan.com (fields ready to copy), Garmin .fpl or GPX.",
+            "The briefing gathers the go / no-go call, route, navlog, weather, NOTAMs and W&B on one page you can save as PDF and print.",
+            "Send the route to FltPlan Go with a QR code (nothing gets filed), or export Garmin .fpl, GPX or KML.",
             "For planning only: always get an official briefing before flight.",
         ],
         tip: "Everything you plan stays on this computer.",

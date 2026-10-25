@@ -103,6 +103,19 @@ pub fn card(ui: &mut egui::Ui, app: &mut App, v: &Verdict, id: &str) {
                 }
             }
         }
+        // not green: point at the next window that is
+        if v.call != Call::Go {
+            if let Some((a, b)) = next_green(&app.plan.windows, dep.timestamp()) {
+                let fmt = |ts: i64| chrono::DateTime::from_timestamp(ts, 0).map(|d| d.with_timezone(&chrono::Local).format("%a %H:%M").to_string()).unwrap_or_default();
+                let label = format!("{}  Next green window: {} – {}", ph::CALENDAR_CHECK, fmt(a), fmt(b));
+                ui.add_space(2.0);
+                if widgets::link(ui, &t, label).on_hover_text("Move the departure to the start of it").clicked() {
+                    if let Some(d) = chrono::DateTime::from_timestamp(a, 0) {
+                        super::timeline::set_departure(app, d);
+                    }
+                }
+            }
+        }
         let n_checks = v.checks().count();
         if n_checks > 0 {
             ui.add_space(2.0);
@@ -128,6 +141,16 @@ pub fn card(ui: &mut egui::Ui, app: &mut App, v: &Verdict, id: &str) {
     }
 }
 
+/// The next run of "go" departures after `from` in the 3-hourly windows: (start, end) unix times.
+pub fn next_green(windows: &[(i64, Call)], from: i64) -> Option<(i64, i64)> {
+    let start = windows.iter().position(|w| w.0 > from && w.1 == Call::Go)?;
+    let mut end = start;
+    while end + 1 < windows.len() && windows[end + 1].1 == Call::Go {
+        end += 1;
+    }
+    Some((windows[start].0, windows[end].0))
+}
+
 /// One-line summary for places with no room for the card.
 pub fn line(ui: &mut egui::Ui, t: &Tokens, v: &Verdict) {
     ui.horizontal(|ui| {
@@ -135,4 +158,16 @@ pub fn line(ui: &mut egui::Ui, t: &Tokens, v: &Verdict) {
         ui.add(egui::Label::new(RichText::new(&v.headline).size(12.0).color(t.text2)).truncate());
     });
     let _ = vec2(0.0, 0.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_next_green_run() {
+        let w = [(0, Call::Go), (10, Call::NoGo), (20, Call::Caution), (30, Call::Go), (40, Call::Go), (50, Call::NoGo)];
+        assert_eq!(next_green(&w, 5), Some((30, 40)));
+        assert_eq!(next_green(&w, 45), None);
+    }
 }

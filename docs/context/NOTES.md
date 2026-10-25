@@ -24,3 +24,14 @@ flightplan-context `add_note` tool; keep each note short and specific.
 - Never add Co-Authored-By / Claude attribution lines to commits or PRs (owner's rule). (2026-10-24)
 - License is AGPL-3.0-only. (2026-10-24)
 - Desktop app must stay native (Rust + egui), never a webview wrapper. (2026-10-24)
+
+## Weather data
+- IEM HRRR extended-run tiles (hrrr::REFD-F1140..2880) often 503 past ~38 h even though refd_{min}.json exists; radar.rs Runs probes the last served hour by binary search on tile 4/3/5. (2026-10-24)
+- G-AIRMET/SIGMET from aviationweather.gov are only valid for hours: filter by the ETA at the crossing point (hazards.rs lateral) or a departure days out gets flagged by today's advisories. (2026-10-24)
+- FAA TFR shapes have no machine-readable times, but titles carry dates ("Friday, October 23, 2026 through Sunday, October 25, 2026 Local"). hazards::tfr_days parses them (12 h slack for zones); undated or old single-date titles count as always active. (2026-10-24)
+
+## Plan
+- Route.rev is serde(skip) and must deserialize to 1, not 0: Plan treats fetched_rev 0 as already fetched, so a route restored at startup never loaded its profile. The verdict waits for profile_rev == route.rev and a non-empty profile, so it never says GO without terrain. (2026-10-24)
+
+## Chart
+- Black hatched blobs on the chart at zoom 8-10 were hundreds of wind-turbine obstacle symbols overprinting; view.rs now thins obstacles tallest-first with a pixel grid below zoom 12.5. (2026-10-24)

@@ -290,8 +290,8 @@ fn en_route_checks(e: &EnRoute, cruise: f64, out: &mut Vec<Factor>) {
         push(out, call, format!("Freezing level {} ft with moisture", thousands((fz / 100.0).round() * 100.0)), format!("At your {} ft cruise near {d:.0} NM there's cloud or precipitation at or above the freezing level: icing is possible.", thousands(cruise)), d);
     }
     if let Some((v, d)) = e.min_vis {
-        if v < 1.0 {
-            push(out, Call::NoGo, format!("Visibility under 1 SM along the route"), format!("Model visibility {v:.1} SM near {d:.0} NM."), d);
+        if v < 1.0 && e.vis_under_1 >= 2 {
+            push(out, Call::NoGo, "Visibility under 1 SM along the route".to_string(), format!("Model visibility {v:.1} SM near {d:.0} NM, and under 1 SM at {} points.", e.vis_under_1), d);
         } else if v < 3.0 {
             push(out, Call::Caution, format!("Low visibility along the route"), format!("Model visibility {v:.1} SM near {d:.0} NM."), d);
         }
