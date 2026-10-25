@@ -238,7 +238,10 @@ impl Db {
             return Ok(Some(Place { kind: "coord", id: id.clone(), name: id, detail: String::new(), lat: p.0, lon: p.1 }));
         }
         let conn = self.conn.lock();
-        if let Some(site) = self.site_for(&conn, &id)? {
+        // a three-letter identifier is the navaid when there is one (PSP, PMD): pilots write
+        // airports with their ICAO K prefix in a route; E25-style ids have no navaid twin
+        let navaid_first = id.len() == 3 && conn.query_row("SELECT 1 FROM navaid WHERE id = ?1 LIMIT 1", [&id], |_| Ok(())).optional()?.is_some();
+        if let Some(site) = self.site_for(&conn, &id)?.filter(|_| !navaid_first) {
             return Ok(conn
                 .query_row("SELECT id, icao, name, city, state, lat, lon, elev FROM airport WHERE site_no = ?1", [&site], |r| {
                     let icao = s(r, 1);
@@ -280,6 +283,53 @@ impl Db {
             .filter_map(Result::ok)
             .collect();
         Ok(pick(fixes))
+    }
+
+    /// Whether this data pack has airways (packs built before they were added don't).
+    pub fn has_airways(&self) -> bool {
+        let conn = self.conn.lock();
+        conn.query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'airway'", [], |_| Ok(())).optional().ok().flatten().is_some()
+    }
+
+    /// The points of airway `awy` strictly between `from` and `to` (in flying order), or None
+    /// when the airway doesn't connect them. Where an id appears twice, the point nearest the
+    /// given position wins.
+    pub fn airway_between(&self, awy: &str, from: (&str, f64, f64), to: &str) -> anyhow::Result<Option<Vec<Place>>> {
+        let awy = awy.trim().to_uppercase();
+        let conn = self.conn.lock();
+        let mut st = conn.prepare("SELECT loc, seq, point, kind, lat, lon, mea FROM airway WHERE id = ?1 ORDER BY loc, seq")?;
+        let rows: Vec<(String, String, String, f64, f64, Option<i64>)> = st
+            .query_map([&awy], |r| Ok((s(r, 0), s(r, 2), s(r, 3), r.get(4)?, r.get(5)?, r.get(6)?)))?
+            .filter_map(Result::ok)
+            .collect();
+        let mut best: Option<Vec<Place>> = None;
+        let mut locs: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        locs.dedup();
+        for loc in locs {
+            let pts: Vec<&(String, String, String, f64, f64, Option<i64>)> = rows.iter().filter(|r| r.0 == loc).collect();
+            let near = |i: &usize| (pts[*i].3 - from.1).powi(2) + (pts[*i].4 - from.2).powi(2);
+            let Some(a) = (0..pts.len()).filter(|i| pts[*i].1 == from.0.to_uppercase()).min_by(|x, y| near(x).total_cmp(&near(y))) else { continue };
+            let to_u = to.to_uppercase();
+            let Some(b) = (0..pts.len()).filter(|i| pts[*i].1 == to_u).min_by_key(|i| (*i as i64 - a as i64).abs()) else { continue };
+            let idx: Vec<usize> = if a < b { (a + 1..b).collect() } else { (b + 1..a).rev().collect() };
+            let places = idx
+                .into_iter()
+                .map(|i| {
+                    let p = pts[i];
+                    Place {
+                        kind: if p.2 == "navaid" { "navaid" } else { "fix" },
+                        id: p.1.clone(),
+                        name: p.1.clone(),
+                        detail: format!("{awy}{}", p.5.map(|m| format!(" · MEA {m}")).unwrap_or_default()),
+                        lat: p.3,
+                        lon: p.4,
+                    }
+                })
+                .collect();
+            best = Some(places);
+            break;
+        }
+        Ok(best)
     }
 
     pub fn search(&self, q: &str) -> anyhow::Result<Vec<Place>> {

@@ -43,6 +43,16 @@ impl Place {
         Place { kind: Kind::Coord, id: crate::nav::geo::coord_id(lat, lon), name: "User waypoint".into(), detail: format!("{lat:.4}, {lon:.4}"), lat, lon }
     }
 
+    /// The airway this point was expanded from ("V327" from a detail like "V327 · MEA 8000").
+    pub fn airway(&self) -> Option<&str> {
+        if self.kind == Kind::Airport || self.kind == Kind::Coord {
+            return None;
+        }
+        let tok = self.detail.split_whitespace().next()?;
+        let mut c = tok.chars();
+        (matches!(c.next(), Some('V' | 'T' | 'J' | 'Q' | 'A' | 'B' | 'G' | 'R')) && tok.len() >= 2 && tok.len() <= 5 && c.all(|x| x.is_ascii_digit())).then_some(tok)
+    }
+
     /// The identifier aviationweather.gov knows an airport by (K-prefix for 3-letter US ids).
     pub fn wx_id(&self) -> String {
         if self.id.len() == 3 { format!("K{}", self.id) } else { self.id.clone() }
@@ -71,4 +81,25 @@ pub fn new_uid() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
     t.wrapping_mul(31).wrapping_add(NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Route identifiers with airway runs written as the airway ("PXR V327 FLG"), the way flight
+/// plans and route strings write them. `id` gives each point's identifier.
+pub fn compact_ids(places: &[&Place], id: impl Fn(&Place) -> String) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut last_awy: Option<&str> = None;
+    for p in places {
+        match p.airway() {
+            Some(a) if last_awy == Some(a) => continue,
+            Some(a) => {
+                out.push(a.to_string());
+                last_awy = Some(a);
+            }
+            None => {
+                out.push(id(p));
+                last_awy = None;
+            }
+        }
+    }
+    out
 }

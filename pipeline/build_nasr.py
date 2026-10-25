@@ -201,6 +201,8 @@ def build():
         CREATE INDEX fix_id ON fix(id);
         CREATE TABLE obstacle (lat REAL, lon REAL, agl INTEGER, msl INTEGER, lit INTEGER, type TEXT);
         CREATE INDEX obstacle_ll ON obstacle(lat, lon);
+        CREATE TABLE airway (id TEXT, loc TEXT, seq INTEGER, point TEXT, kind TEXT, lat REAL, lon REAL, mea INTEGER);
+        CREATE INDEX airway_id ON airway(id);
     """)
     for r in apt_rows:
         db.execute("INSERT INTO airport VALUES (" + ",".join("?" * 35) + ")", (
@@ -238,9 +240,41 @@ def build():
     db.executemany("INSERT INTO navaid VALUES (?,?,?,?,?,?,?,?,?)", nav_rows)
     db.executemany("INSERT INTO fix VALUES (?,?,?,?,?)", fix_rows)
     db.executemany("INSERT INTO obstacle VALUES (?,?,?,?,?,?)", obs_rows)
+    db.executemany("INSERT INTO airway VALUES (?,?,?,?,?,?,?,?)", airway_rows(nav_rows, fix_rows))
     db.commit()
     db.close()
     print("aviation.sqlite written")
+
+
+def airway_rows(nav_rows, fix_rows):
+    """Airways as ordered points (NASR AWY_SEG_ALT), each placed on its navaid or fix: the
+    candidate nearest the previous point when an identifier is used more than once."""
+    navs, fixes = {}, {}
+    for r in nav_rows:
+        navs.setdefault(r[0], []).append((r[5], r[6]))
+    for r in fix_rows:
+        fixes.setdefault(r[0], []).append((r[1], r[2]))
+    segs = {}
+    for r in rows("AWY_SEG_ALT"):
+        key = (r["AWY_ID"], r["AWY_LOCATION"])
+        segs.setdefault(key, []).append(r)
+    out = []
+    for (awy, loc), lst in segs.items():
+        lst.sort(key=lambda r: int(num(r["POINT_SEQ"], 0)))
+        pts = [(r["FROM_POINT"], r["FROM_PT_TYPE"].strip(), num(r["MIN_ENROUTE_ALT"])) for r in lst]
+        pts.append((lst[-1]["TO_POINT"], "", None))
+        prev = None
+        for i, (name, kind, mea) in enumerate(pts):
+            cands = (navs.get(name) if kind not in ("RP", "WP", "CN", "MR", "MW", "NRS") else None) or fixes.get(name) or navs.get(name) or []
+            cands = [c for c in cands if c[0] is not None and c[1] is not None]
+            if not cands:
+                prev = None
+                continue
+            at = min(cands, key=lambda c: (c[0] - prev[0]) ** 2 + (c[1] - prev[1]) ** 2) if prev else cands[0]
+            prev = at
+            out.append((awy, loc, i, name, "navaid" if name in navs and kind not in ("RP", "WP") else "fix", at[0], at[1], int(mea) if mea else None))
+    print("airway points", len(out))
+    return out
 
 
 if __name__ == "__main__":

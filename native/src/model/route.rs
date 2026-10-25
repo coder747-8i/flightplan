@@ -123,8 +123,9 @@ impl Route {
         self.waypoints.iter().map(|w| [w.lon, w.lat]).collect()
     }
 
+    /// The route as typed: identifiers, with airway runs written as the airway.
     pub fn text(&self) -> String {
-        self.waypoints.iter().map(|w| w.id.as_str()).collect::<Vec<_>>().join(" ")
+        super::place::compact_ids(&self.places(), |p| p.id.clone()).join(" ")
     }
 
     #[cfg(test)]

@@ -48,7 +48,7 @@ fn hhmm(min: f64) -> String {
 
 /// The values FltPlan.com's flight plan form asks for, ready to copy.
 pub fn fltplan_fields(wps: &[&Place], cruise: f64, ac: Option<&Aircraft>, ete_min: Option<f64>) -> FltPlanFields {
-    let ids: Vec<String> = wps.iter().map(|p| route_id(p)).collect();
+    let ids: Vec<String> = crate::model::place::compact_ids(wps, route_id);
     let mid: &[String] = if ids.len() > 2 { &ids[1..ids.len() - 1] } else { &[] };
     // FltPlan, like the FAA form, wants altitude in hundreds of feet ("065"), FL above 17,999
     let altitude = if cruise >= 18000.0 { format!("FL{}", (cruise / 100.0).round()) } else { format!("{:03}", (cruise / 100.0).round() as i64) };
@@ -76,20 +76,18 @@ pub struct GoRoute {
 }
 
 pub fn fltplan_go(wps: &[&Place]) -> GoRoute {
-    let mut custom = Vec::new();
-    let ids: Vec<String> = wps
-        .iter()
-        .map(|p| {
-            if p.kind == Kind::Coord {
-                let name = format!("FP{:02}", custom.len() + 1);
-                custom.push((name.clone(), p.lat, p.lon));
-                name
-            } else {
-                p.id.to_uppercase()
-            }
-        })
-        .collect();
-    GoRoute { route: ids.join(" "), custom }
+    let custom = std::cell::RefCell::new(Vec::new());
+    let ids = crate::model::place::compact_ids(wps, |p| {
+        if p.kind == Kind::Coord {
+            let mut c = custom.borrow_mut();
+            let name = format!("FP{:02}", c.len() + 1);
+            c.push((name.clone(), p.lat, p.lon));
+            name
+        } else {
+            p.id.to_uppercase()
+        }
+    });
+    GoRoute { route: ids.join(" "), custom: custom.into_inner() }
 }
 
 /// KML with one Placemark per point (custom waypoints) and the route as a line.
@@ -254,6 +252,20 @@ mod tests {
 
     fn p(kind: Kind, id: &str, lat: f64, lon: f64) -> Place {
         Place { kind, id: id.into(), name: id.into(), detail: if kind == Kind::Navaid { "VORTAC 114.1".into() } else { String::new() }, lat, lon }
+    }
+
+    #[test]
+    fn airways_stay_airways() {
+        let mut a = p(Kind::Fix, "KNOBB", 33.7, -111.9);
+        a.detail = "V327 · MEA 8000".into();
+        let mut b = p(Kind::Fix, "RADOM", 34.0, -111.8);
+        b.detail = "V327 · MEA 12000".into();
+        let s = p(Kind::Airport, "KSDL", 33.6, -111.9);
+        let x = p(Kind::Navaid, "PXR", 33.4, -111.97);
+        let f = p(Kind::Navaid, "FLG", 35.1, -111.7);
+        let f2 = fltplan_fields(&[&s, &x, &a, &b, &f], 10500.0, None, None);
+        assert_eq!(f2.full, "KSDL PXR V327 FLG");
+        assert_eq!(f2.route, "PXR V327");
     }
 
     #[test]
