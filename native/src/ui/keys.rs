@@ -26,11 +26,23 @@ fn hint(v: &Option<String>) -> String {
     }
 }
 
+/// A pasted key, cleaned: no whitespace or line breaks anywhere, no surrounding quotes, and no
+/// "client_id:" style label copied along with it.
+pub fn clean_key(s: &str) -> String {
+    let mut v: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    for label in ["client_id:", "clientid:", "client_secret:", "clientsecret:", "client_id=", "client_secret=", "key:", "id:", "secret:"] {
+        if v.to_lowercase().starts_with(label) {
+            v = v[label.len()..].to_string();
+        }
+    }
+    v.trim_matches(|c| c == '"' || c == '\'' || c == ',' || c == ';').to_string()
+}
+
 fn save(app: &mut App, which: &str, clear: bool) {
     let mut k = app.be.server.settings.get();
     let ui = &mut app.settings_ui;
     let take = |s: &mut String| {
-        let v = s.trim().to_string();
+        let v = clean_key(s);
         s.clear();
         v
     };
@@ -45,6 +57,14 @@ fn save(app: &mut App, which: &str, clear: bool) {
         "windyMap" => set(&mut k.windy_map, take(&mut ui.windy_map), clear),
         "windyPoint" => set(&mut k.windy_point, take(&mut ui.windy_point), clear),
         _ => {
+            // both halves are needed: don't save one and leave the other missing
+            let (a, b) = (clean_key(&ui.notam_id), clean_key(&ui.notam_secret));
+            let have_a = !a.is_empty() || k.notam_id.is_some();
+            let have_b = !b.is_empty() || k.notam_secret.is_some();
+            if !clear && !(have_a && have_b) {
+                ui.error = "Enter both the client ID and the client secret from your FAA app.".into();
+                return;
+            }
             let (a, b) = (take(&mut ui.notam_id), take(&mut ui.notam_secret));
             set(&mut k.notam_id, a, clear);
             set(&mut k.notam_secret, b, clear);
@@ -80,7 +100,7 @@ pub fn form(app: &mut App, ui: &mut egui::Ui) {
     // winds aloft come from the NWS forecast; no key needed
     let sections: [(&str, &str, &str, &'static str, Vec<(&str, &str, Option<String>)>); 2] = [
         ("Windy map (web app)", "Used by the browser version's Windy map. The desktop app draws winds natively, so this key only matters if you also use the web version.", "https://api.windy.com/keys", "windyMap", vec![("windyMap", "Map Forecast API key", k.windy_map.clone())]),
-        ("FAA NOTAMs", "Airport, en route, FDC and TFR NOTAMs along your route in the briefing. Register a free app on the FAA API portal and copy its client ID and secret.", "https://api.faa.gov/s/", "notam", vec![("notamId", "Client ID", k.notam_id.clone()), ("notamSecret", "Client secret", k.notam_secret.clone())]),
+        ("FAA NOTAMs", "NOTAMs for your route, the airport cards, the briefing and the go / no-go call. On api.faa.gov: sign up (free), create an app with the NOTAM API, and once it's approved copy its client ID and client secret here.", "https://api.faa.gov/s/", "notam", vec![("notamId", "Client ID", k.notam_id.clone()), ("notamSecret", "Client secret", k.notam_secret.clone())]),
     ];
     for (title, blurb, link, test, fields) in sections {
         ui.add_space(10.0);
@@ -89,7 +109,15 @@ pub fn form(app: &mut App, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(title).font(theme::semibold(13.5)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (label, fg) = if all_set { (format!("{} Connected", ph::CHECK), Some(t.ok)) } else if any_set { ("Incomplete".to_string(), None) } else { ("Not set".to_string(), None) };
+                // "Connected" only once a test has passed
+                let tested = app.settings_ui.results.get(test).map(|r| r.0);
+                let (label, fg) = match (all_set, any_set, tested) {
+                    (true, _, Some(true)) => (format!("{} Connected", ph::CHECK), Some(t.ok)),
+                    (true, _, Some(false)) => (format!("{} Not accepted", ph::X), Some(t.bad)),
+                    (true, _, None) => ("Saved".to_string(), None),
+                    (false, true, _) => ("Incomplete".to_string(), None),
+                    _ => ("Not set".to_string(), None),
+                };
                 widgets::chip(ui, &t, &label, fg, None);
             });
         });
@@ -99,14 +127,19 @@ pub fn form(app: &mut App, ui: &mut egui::Ui) {
         }
         for (id, label, saved) in &fields {
             faint(ui, &t, format!("{label} · {}", hint(saved)));
-            let reveal = app.settings_ui.reveal;
+            // the client ID isn't secret: show it, so a paste that didn't land is obvious
+            let reveal = app.settings_ui.reveal || *id == "notamId";
             let buf = match *id {
                 "windyMap" => &mut app.settings_ui.windy_map,
                 "windyPoint" => &mut app.settings_ui.windy_point,
                 "notamId" => &mut app.settings_ui.notam_id,
                 _ => &mut app.settings_ui.notam_secret,
             };
-            ui.add(egui::TextEdit::singleline(buf).password(!reveal).font(theme::mono(12.0)).desired_width(f32::INFINITY).hint_text(if saved.is_some() { "Enter a new value to replace" } else { "Paste the key" }));
+            ui.add(egui::TextEdit::singleline(buf).password(!reveal).font(theme::mono(12.0)).desired_width(f32::INFINITY).hint_text(if saved.is_some() { "Enter a new value to replace" } else { "Paste here (Ctrl+V)" }));
+            let n = clean_key(buf).len();
+            if n > 0 {
+                faint(ui, &t, format!("{n} characters entered (spaces and line breaks are removed)"));
+            }
         }
         ui.horizontal(|ui| {
             let ids: Vec<&str> = fields.iter().map(|f| f.0).collect();
@@ -116,8 +149,15 @@ pub fn form(app: &mut App, ui: &mut egui::Ui) {
                 "notamId" => !app.settings_ui.notam_id.trim().is_empty(),
                 _ => !app.settings_ui.notam_secret.trim().is_empty(),
             });
-            if ui.add_enabled(has_draft, egui::Button::new(RichText::new("Save").color(egui::Color32::WHITE)).fill(t.accent)).clicked() {
+            if ui.add_enabled(has_draft, egui::Button::new(RichText::new(if test == "notam" { "Save and test" } else { "Save" }).color(egui::Color32::WHITE)).fill(t.accent)).clicked() {
                 save(app, test, false);
+                // check it straight away against the service
+                if app.settings_ui.error.is_empty() && test != "windyMap" {
+                    let st = app.be.server.clone();
+                    let which = test;
+                    app.settings_ui.results.remove(test);
+                    app.settings_ui.test = Some((test, app.be.spawn(async move { flightplan_server::settings::test_key(&st, which).await })));
+                }
             }
             let running = app.settings_ui.test.as_ref().is_some_and(|x| x.0 == test);
             if ui.add_enabled(any_set && !running, egui::Button::new(if running { "Testing…" } else { "Test" })).clicked() {
@@ -136,4 +176,15 @@ pub fn form(app: &mut App, ui: &mut egui::Ui) {
         widgets::rule(ui, &t);
     }
     ui.checkbox(&mut app.settings_ui.reveal, "Show what I type");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cleans_pasted_keys() {
+        assert_eq!(super::clean_key("  abc123 \n"), "abc123");
+        assert_eq!(super::clean_key("\"abc 123\""), "abc123");
+        assert_eq!(super::clean_key("client_id: abc123"), "abc123");
+        assert_eq!(super::clean_key("Client_Secret:XyZ"), "XyZ");
+    }
 }

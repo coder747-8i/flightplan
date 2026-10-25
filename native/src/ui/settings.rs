@@ -49,7 +49,8 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
     let close = widgets::side_panel(ctx, &t, "panel-settings", "Settings", "Minimums, chart data and API keys", 380.0, app, |_, _| false, |ui, app| {
         widgets::fold(ui, &t, "settings-minimums", "Personal minimums", true, |ui| minimums(app, ui));
         widgets::fold(ui, &t, "settings-data", "Chart data", true, |ui| super::data::show(app, ui, true));
-        widgets::fold(ui, &t, "settings-keys", "API keys", false, |ui| super::keys::form(app, ui));
+        let keys_open = !app.keys.notams;
+        widgets::fold(ui, &t, "settings-keys", "API keys (FAA NOTAMs)", keys_open, |ui| super::keys::form(app, ui));
         section(ui, &t, "Setup");
         if widgets::button(ui, format!("{}  Run the setup screen again", ph::SPARKLE)).clicked() {
             app.onboarding.reopen(0);

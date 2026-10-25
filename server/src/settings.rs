@@ -173,7 +173,13 @@ pub async fn test_key(s: &AppState, which: &str) -> (bool, String) {
                     .send()
                     .await?;
                 let status = r.status();
-                if status.is_success() { Ok("FAA NOTAM API credentials work".into()) } else { anyhow::bail!("FAA answered HTTP {status}") }
+                match status.as_u16() {
+                    200..=299 => Ok("FAA NOTAM API credentials work".into()),
+                    401 => anyhow::bail!("The FAA didn't accept this client ID and secret (401 Unauthorized). Copy both again from your app on api.faa.gov (My Apps), and check the app has been approved for the NOTAM API."),
+                    403 => anyhow::bail!("The FAA knows this key but it isn't allowed to use the NOTAM API yet (403). Check the app's API access on api.faa.gov; approval can take a while."),
+                    429 => anyhow::bail!("The FAA is rate-limiting this key (429). Try again in a minute."),
+                    _ => anyhow::bail!("FAA answered HTTP {status}"),
+                }
             }
             "windyMap" => {
                 // the map key is checked by Windy in the browser (it is domain-locked), so only report presence
