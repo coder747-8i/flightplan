@@ -9,6 +9,9 @@ use crate::wx::notams::{Effect, Notam};
 use egui::{CornerRadius, Frame, Margin, RichText};
 use egui_phosphor::regular as ph;
 
+/// A ready-to-send request for NMS API access.
+pub const REQUEST_MAILTO: &str = "mailto:notams@faa.gov?subject=NMS%20API%20access%20request&body=Hello%2C%0A%0AI%20would%20like%20to%20request%20access%20to%20the%20NOTAM%20Management%20Service%20(NMS)%20API%20for%20a%20personal%20flight-planning%20application%20(pre-flight%20NOTAM%20review%20for%20my%20own%20flights%2C%20GeoJSON%2C%20low%20volume).%0A%0AName%3A%20%0APilot%20certificate%20(optional)%3A%20%0A%0AThank%20you.";
+
 fn icon(t: &Tokens, n: &Notam) -> (&'static str, egui::Color32) {
     match n.effect {
         Effect::AerodromeClosed | Effect::RunwayClosed(_) => (ph::PROHIBIT, t.bad),
@@ -47,10 +50,10 @@ pub fn row(ui: &mut egui::Ui, t: &Tokens, n: &Notam, raw: bool) {
 /// Prompt to set up NOTAMs (free FAA credentials).
 pub fn setup_hint(ui: &mut egui::Ui, app: &mut App) {
     let t = app.t;
-    widgets::para(ui, "NOTAMs come from the FAA NOTAM API, which needs a free client ID and secret from api.faa.gov.", t.text2, 11.5);
+    widgets::para(ui, "NOTAMs come from the FAA NOTAM Management Service. Access is free but by request: email notams@faa.gov, then paste the client ID and secret they send in Settings.", t.text2, 11.5);
     ui.horizontal(|ui| {
-        if widgets::link(ui, &t, format!("{} Get a key", ph::ARROW_SQUARE_OUT)).clicked() {
-            let _ = open::that("https://api.faa.gov/s/");
+        if widgets::link(ui, &t, format!("{} Email the FAA", ph::ENVELOPE_SIMPLE)).clicked() {
+            let _ = open::that(REQUEST_MAILTO);
         }
         if widgets::link(ui, &t, format!("{} Add it in Settings", ph::GEAR_SIX)).clicked() {
             app.panel = Panel::Settings;
@@ -108,11 +111,11 @@ pub fn route_section(ui: &mut egui::Ui, app: &mut App) {
 /// One airport's NOTAMs (the airport card). Returns (toggle raw text, open Settings).
 pub fn airport_tab(ui: &mut egui::Ui, t: &Tokens, configured: bool, raw: bool, v: Option<&serde_json::Value>) -> (bool, bool) {
     if !configured {
-        widgets::para(ui, "NOTAMs come from the FAA NOTAM API, which needs a free client ID and secret from api.faa.gov.", t.text2, 11.5);
+        widgets::para(ui, "NOTAMs come from the FAA NOTAM Management Service. Access is free but by request: email notams@faa.gov, then paste the client ID and secret they send in Settings.", t.text2, 11.5);
         let mut settings = false;
         ui.horizontal(|ui| {
-            if widgets::link(ui, t, format!("{} Get a key", ph::ARROW_SQUARE_OUT)).clicked() {
-                let _ = open::that("https://api.faa.gov/s/");
+            if widgets::link(ui, t, format!("{} Email the FAA", ph::ENVELOPE_SIMPLE)).clicked() {
+                let _ = open::that(REQUEST_MAILTO);
             }
             settings = widgets::link(ui, t, format!("{} Add it in Settings", ph::GEAR_SIX)).clicked();
         });

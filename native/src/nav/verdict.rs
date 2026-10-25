@@ -365,7 +365,7 @@ pub fn evaluate(i: &Input) -> Verdict {
                 out.push(f(Call::Go, "NOTAM", format!("{} NOTAMs checked", list.len()), "Nothing closes an airport or runway you use, no fuel or navaid outage on your route.", None));
             }
         }
-        None => out.push(f(Call::Go, "NOTAM", "NOTAMs not checked", "Add a free FAA NOTAM API key in Settings to include them, or check NOTAMs at 1800wxbrief.", None)),
+        None => out.push(f(Call::Go, "NOTAM", "NOTAMs not checked", "Add FAA NOTAM credentials in Settings (free, by email request to notams@faa.gov) to include them, or check NOTAMs at 1800wxbrief.", None)),
     }
     if i.official_known {
         official_checks(&i.official, &mut out);

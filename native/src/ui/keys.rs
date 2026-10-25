@@ -100,7 +100,7 @@ pub fn form(app: &mut App, ui: &mut egui::Ui) {
     // winds aloft come from the NWS forecast; no key needed
     let sections: [(&str, &str, &str, &'static str, Vec<(&str, &str, Option<String>)>); 2] = [
         ("Windy map (web app)", "Used by the browser version's Windy map. The desktop app draws winds natively, so this key only matters if you also use the web version.", "https://api.windy.com/keys", "windyMap", vec![("windyMap", "Map Forecast API key", k.windy_map.clone())]),
-        ("FAA NOTAMs", "NOTAMs for your route, the airport cards, the briefing and the go / no-go call. On api.faa.gov: sign up (free), create an app with the NOTAM API, and once it's approved copy its client ID and client secret here.", "https://api.faa.gov/s/", "notam", vec![("notamId", "Client ID", k.notam_id.clone()), ("notamSecret", "Client secret", k.notam_secret.clone())]),
+        ("FAA NOTAMs", "NOTAMs for your route, the airport cards, the briefing and the go / no-go call. The FAA's NOTAM Management Service (NMS) isn't self-serve: request API access by email to notams@faa.gov, and paste the client ID and client secret they send. Older api.faa.gov NOTAM keys work too.", "https://nms.aim.faa.gov/", "notam", vec![("notamId", "Client ID", k.notam_id.clone()), ("notamSecret", "Client secret", k.notam_secret.clone())]),
     ];
     for (title, blurb, link, test, fields) in sections {
         ui.add_space(10.0);
@@ -122,9 +122,14 @@ pub fn form(app: &mut App, ui: &mut egui::Ui) {
             });
         });
         widgets::para(ui, blurb, t.text3, 11.5);
-        if widgets::link(ui, &t, format!("{} {}", link.trim_start_matches("https://").trim_end_matches('/'), ph::ARROW_SQUARE_OUT)).clicked() {
-            let _ = open::that(link);
-        }
+        ui.horizontal(|ui| {
+            if widgets::link(ui, &t, format!("{} {}", link.trim_start_matches("https://").trim_end_matches('/'), ph::ARROW_SQUARE_OUT)).clicked() {
+                let _ = open::that(link);
+            }
+            if test == "notam" && widgets::link(ui, &t, format!("{} Email the FAA for access", ph::ENVELOPE_SIMPLE)).clicked() {
+                let _ = open::that(super::notams::REQUEST_MAILTO);
+            }
+        });
         for (id, label, saved) in &fields {
             faint(ui, &t, format!("{label} · {}", hint(saved)));
             // the client ID isn't secret: show it, so a paste that didn't land is obvious

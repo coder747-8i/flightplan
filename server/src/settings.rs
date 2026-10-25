@@ -165,20 +165,16 @@ pub async fn test_key(s: &AppState, which: &str) -> (bool, String) {
             }
             "notam" => {
                 let (id, secret) = (k.notam_id.clone().ok_or_else(|| anyhow::anyhow!("no client id saved"))?, k.notam_secret.clone().ok_or_else(|| anyhow::anyhow!("no client secret saved"))?);
-                let r = http
-                    .get("https://external-api.faa.gov/notamapi/v1/notams")
-                    .header("client_id", id)
-                    .header("client_secret", secret)
-                    .query(&[("icaoLocation", "KPHX"), ("pageSize", "1")])
-                    .send()
-                    .await?;
-                let status = r.status();
-                match status.as_u16() {
-                    200..=299 => Ok("FAA NOTAM API credentials work".into()),
-                    401 => anyhow::bail!("The FAA didn't accept this client ID and secret (401 Unauthorized). Copy both again from your app on api.faa.gov (My Apps), and check the app has been approved for the NOTAM API."),
-                    403 => anyhow::bail!("The FAA knows this key but it isn't allowed to use the NOTAM API yet (403). Check the app's API access on api.faa.gov; approval can take a while."),
-                    429 => anyhow::bail!("The FAA is rate-limiting this key (429). Try again in a minute."),
-                    _ => anyhow::bail!("FAA answered HTTP {status}"),
+                match crate::notam::service_for(s, &id, &secret).await {
+                    Ok(crate::notam::Service::Nms) => Ok("Connected to the FAA NOTAM Management Service (NMS)".into()),
+                    Ok(crate::notam::Service::Legacy) => Ok("Connected to the FAA NOTAM API (legacy api.faa.gov)".into()),
+                    Err(e) => {
+                        let e = e.to_string();
+                        if e.contains("invalid_client") || e.contains("Invalid") || e.contains("401") {
+                            anyhow::bail!("The FAA didn't recognise this client ID / secret. NOTAM access now comes from the FAA NOTAM Management Service: email notams@faa.gov to request NMS API access, and use the client ID and secret they send.")
+                        }
+                        anyhow::bail!("Couldn't check with the FAA: {e}")
+                    }
                 }
             }
             "windyMap" => {

@@ -316,7 +316,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, b: &Briefing) {
     section(ui, &t, "NOTAMs");
     let rn = &app.plan.notams;
     if !app.keys.notams {
-        widgets::para(ui, "Add a free FAA NOTAM API key in Settings to list NOTAMs here. Meanwhile, use the NOTAM links above or 1800wxbrief.", t.text2, 12.0);
+        widgets::para(ui, "Add FAA NOTAM credentials in Settings (request them free from notams@faa.gov) to list NOTAMs here. Meanwhile, use the NOTAM links above or 1800wxbrief.", t.text2, 12.0);
     } else if !rn.done {
         faint(ui, &t, "Loading NOTAMs…");
     } else {

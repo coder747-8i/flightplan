@@ -1,4 +1,7 @@
-//! NOTAMs from the FAA NOTAM API (api.faa.gov; needs FAA_NOTAM_CLIENT_ID / FAA_NOTAM_CLIENT_SECRET).
+//! NOTAMs from the FAA: the NOTAM Management Service (NMS) API, the FAA's current system
+//! (credentials by email from notams@faa.gov; OAuth client-credentials token, GeoJSON), with the
+//! legacy NOTAM API (external-api.faa.gov, headers) as a fallback for older api.faa.gov keys.
+//! Credentials: FAA_NOTAM_CLIENT_ID / FAA_NOTAM_CLIENT_SECRET or Settings.
 //! For a route we ask for: each airport by location, every point along the route by radius
 //! (catches en route, obstacle, nav and airspace NOTAMs), the ARTCCs crossed, and FDC NOTAMs
 //! (TFRs, procedure changes) near the route. Results are merged and de-duplicated.
@@ -11,6 +14,64 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 const API: &str = "https://external-api.faa.gov/notamapi/v1/notams";
+const NMS_TOKEN: &str = "https://api-nms.aim.faa.gov/v1/auth/token";
+const NMS_API: &str = "https://api-nms.aim.faa.gov/nmsapi/v1/notams";
+
+/// Which FAA service the saved credentials belong to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Service {
+    Nms,
+    Legacy,
+}
+
+/// (client id, token, expiry) of the last NMS token.
+static NMS: parking_lot::Mutex<Option<(String, String, std::time::Instant)>> = parking_lot::Mutex::new(None);
+
+/// An NMS access token for these credentials (cached until shortly before it expires).
+pub async fn nms_token(s: &AppState, id: &str, secret: &str) -> anyhow::Result<String> {
+    if let Some((cid, tok, until)) = NMS.lock().clone() {
+        if cid == id && std::time::Instant::now() < until {
+            return Ok(tok);
+        }
+    }
+    let r = s.cache.http().post(NMS_TOKEN).basic_auth(id, Some(secret)).header("Content-Type", "application/x-www-form-urlencoded").body("grant_type=client_credentials").send().await?;
+    let status = r.status();
+    let v: Value = r.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        let why = v["Error"].as_str().or(v["error_description"].as_str()).or(v["error"].as_str()).unwrap_or("rejected");
+        anyhow::bail!("NMS token: HTTP {status} {why}");
+    }
+    let tok = v["access_token"].as_str().ok_or_else(|| anyhow::anyhow!("NMS token: no access_token"))?.to_string();
+    let ttl = v["expires_in"].as_u64().unwrap_or(1800).saturating_sub(60).max(30);
+    *NMS.lock() = Some((id.to_string(), tok.clone(), std::time::Instant::now() + Duration::from_secs(ttl)));
+    Ok(tok)
+}
+
+/// Which service accepts these credentials: NMS first, then the legacy API.
+pub async fn service_for(s: &AppState, id: &str, secret: &str) -> anyhow::Result<Service> {
+    let nms = nms_token(s, id, secret).await;
+    if nms.is_ok() {
+        return Ok(Service::Nms);
+    }
+    let r = s.cache.http().get(API).header("client_id", id).header("client_secret", secret).query(&[("icaoLocation", "KPHX"), ("pageSize", "1")]).send().await?;
+    if r.status().is_success() {
+        return Ok(Service::Legacy);
+    }
+    Err(nms.err().unwrap_or_else(|| anyhow::anyhow!("rejected")))
+}
+
+/// One NMS query; `params` are NMS names (location, latitude / longitude / radius).
+async fn query_nms(s: Arc<AppState>, id: String, secret: String, params: Vec<(&'static str, String)>) -> anyhow::Result<Vec<Value>> {
+    let key = format!("notam:nms:{}", serde_json::to_string(&params)?);
+    if let Some(v) = s.cache.peek_json(&key, Duration::from_secs(600)) {
+        return Ok(v.as_array().cloned().unwrap_or_default());
+    }
+    let tok = nms_token(&s, &id, &secret).await?;
+    let v: Value = s.cache.http().get(NMS_API).bearer_auth(tok).header("nmsResponseFormat", "GEOJSON").header("Accept", "application/json").query(&params).send().await?.error_for_status()?.json().await?;
+    let items = v["data"]["geojson"].as_array().cloned().or_else(|| v["items"].as_array().cloned()).unwrap_or_default();
+    s.cache.put_json(&key, &Value::Array(items.clone()));
+    Ok(items)
+}
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new().route("/notams", post(notams))
@@ -103,9 +164,11 @@ fn category(text: &str, class: &str) -> &'static str {
 }
 
 fn normalise(item: &Value) -> Option<(String, Value)> {
-    let core = &item["properties"]["coreNOTAMData"];
-    let n = &core["notam"];
-    let id = n["id"].as_str()?.to_string();
+    // legacy and NMS GeoJSON both nest properties.coreNOTAMData.notam; be lenient about it
+    let props = &item["properties"];
+    let core = if props["coreNOTAMData"].is_object() { &props["coreNOTAMData"] } else { props };
+    let n = if core["notam"].is_object() { &core["notam"] } else { core };
+    let id = n["id"].as_str().map(String::from).or_else(|| n["id"].as_i64().map(|x| x.to_string())).or_else(|| n["number"].as_str().map(|num| format!("{}-{num}", n["location"].as_str().unwrap_or(""))))?;
     let text = n["text"].as_str().unwrap_or_default().to_string();
     let class = n["classification"].as_str().unwrap_or_default().to_string();
     let simple = core["notamTranslation"]
@@ -147,23 +210,42 @@ pub async fn fetch(s: Arc<AppState>, req: NotamReq) -> Value {
         return json!({"configured": false, "items": []});
     };
     let radius = req.radius.unwrap_or(25.0).clamp(5.0, 100.0);
+    let service = match service_for(&s, &id, &secret).await {
+        Ok(sv) => sv,
+        Err(e) => return json!({"configured": true, "items": [], "errors": [format!("The FAA didn't accept the NOTAM credentials: {e}")]}),
+    };
     let mut jobs: Vec<Vec<(&'static str, String)>> = Vec::new();
     for l in req.locations.iter().take(30) {
         let l = l.trim().to_uppercase();
-        if l.len() == 4 {
-            jobs.push(vec![("icaoLocation", l)]);
-        } else {
-            jobs.push(vec![("domesticLocation", l)]);
-        }
+        jobs.push(match (service, l.len()) {
+            (Service::Nms, _) => vec![("location", l)],
+            (Service::Legacy, 4) => vec![("icaoLocation", l)],
+            (Service::Legacy, _) => vec![("domesticLocation", l)],
+        });
     }
     for p in req.points.iter().take(40) {
-        jobs.push(vec![("locationLongitude", format!("{:.4}", p[0])), ("locationLatitude", format!("{:.4}", p[1])), ("locationRadius", format!("{radius:.0}"))]);
+        jobs.push(match service {
+            Service::Nms => vec![("latitude", format!("{:.4}", p[1])), ("longitude", format!("{:.4}", p[0])), ("radius", format!("{radius:.0}"))],
+            Service::Legacy => vec![("locationLongitude", format!("{:.4}", p[0])), ("locationLatitude", format!("{:.4}", p[1])), ("locationRadius", format!("{radius:.0}"))],
+        });
     }
     for a in req.artccs.iter().take(10) {
-        jobs.push(vec![("domesticLocation", a.trim().to_uppercase())]);
+        let a = a.trim().to_uppercase();
+        jobs.push(match service {
+            Service::Nms => vec![("location", a)],
+            Service::Legacy => vec![("domesticLocation", a)],
+        });
     }
-    let futs: Vec<_> = jobs.into_iter().map(|p| query(s.clone(), id.clone(), secret.clone(), p)).collect();
-    let results: Vec<anyhow::Result<Vec<Value>>> = stream::iter(futs).buffer_unordered(6).collect().await;
+    let results: Vec<anyhow::Result<Vec<Value>>> = match service {
+        Service::Nms => {
+            let futs: Vec<_> = jobs.into_iter().map(|p: Vec<(&'static str, String)>| query_nms(s.clone(), id.clone(), secret.clone(), p)).collect();
+            stream::iter(futs).buffer_unordered(4).collect().await
+        }
+        Service::Legacy => {
+            let futs: Vec<_> = jobs.into_iter().map(|p: Vec<(&'static str, String)>| query(s.clone(), id.clone(), secret.clone(), p)).collect();
+            stream::iter(futs).buffer_unordered(6).collect().await
+        }
+    };
     let mut merged: HashMap<String, Value> = HashMap::new();
     let mut errors = Vec::new();
     for r in results {
@@ -180,5 +262,28 @@ pub async fn fetch(s: Arc<AppState>, req: NotamReq) -> Value {
     }
     let mut items: Vec<Value> = merged.into_values().collect();
     items.sort_by(|a, b| a["location"].as_str().cmp(&b["location"].as_str()).then(a["category"].as_str().cmp(&b["category"].as_str())));
-    json!({"configured": true, "items": items, "errors": errors})
+    json!({"configured": true, "service": if service == Service::Nms { "nms" } else { "legacy" }, "items": items, "errors": errors})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_nms_and_legacy_features() {
+        let f = json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [-112.4, 34.6]}, "properties": {"coreNOTAMData": {
+            "notam": {"id": "1234567890123456", "number": "10/124", "location": "PRC", "icaoLocation": "KPRC", "classification": "DOMESTIC",
+                      "effectiveStart": "2026-10-24T13:00:00.000Z", "effectiveEnd": "2026-10-30T23:59:00.000Z", "text": "RWY 03R/21L CLSD"},
+            "notamTranslation": [{"type": "LOCAL_FORMAT", "simpleText": "!PRC 10/124 PRC RWY 03R/21L CLSD 2610241300-2610302359"}]}}});
+        let (id, v) = normalise(&f).unwrap();
+        assert_eq!(id, "1234567890123456");
+        assert_eq!(v["location"], "PRC");
+        assert_eq!(v["category"], "Runway");
+        assert!(v["text"].as_str().unwrap().contains("CLSD"));
+        // flat properties (schema drift) still read
+        let flat = json!({"properties": {"id": 42, "number": "10/1", "location": "SDL", "text": "AD AP CLSD", "classification": "DOMESTIC"}});
+        let (id, v) = normalise(&flat).unwrap();
+        assert_eq!(id, "42");
+        assert_eq!(v["category"], "Aerodrome");
+    }
 }
