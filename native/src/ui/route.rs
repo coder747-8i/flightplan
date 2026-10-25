@@ -1,5 +1,5 @@
-//! Route panel: route entry, flight settings, waypoints with leg info, totals and the
-//! hazard advisor; export / import.
+//! Route panel: the go / no-go call, route entry, aircraft / altitude / departure, waypoints
+//! with leg info and totals; export / import.
 
 use super::tour::mark;
 use super::widgets::{self, faint, section};
@@ -147,91 +147,120 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
 
 fn body(app: &mut App, ui: &mut egui::Ui) {
     let t = app.t;
-    let entry = ui.vertical(|ui| {
-        let te = egui::TextEdit::multiline(&mut app.route_ui.text).font(theme::mono(13.0)).desired_rows(2).desired_width(f32::INFINITY).hint_text("KNYL BZA 3300N11400W KPHX");
+    let has_route = app.saved.route.waypoints.len() >= 2;
+
+    // ---- the call ----
+    if has_route {
+        let top = ui.cursor().min;
+        match app.plan.verdict.clone() {
+            Some(v) => {
+                super::verdict::card(ui, app, &v, "route-verdict");
+                super::tour::mark(ui.ctx(), "route-verdict", egui::Rect::from_min_max(top, egui::pos2(top.x + ui.available_width(), ui.cursor().min.y)));
+            }
+            None => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(14.0));
+                    faint(ui, &t, "Checking weather, terrain and airspace…");
+                });
+            }
+        }
+        if app.plan.forecast.loading {
+            faint(ui, &t, "Fetching forecasts…");
+        }
+        ui.add_space(6.0);
+    }
+
+    // ---- route entry ----
+    let entry = ui.horizontal(|ui| {
+        let w = ui.available_width() - 70.0;
+        let te = egui::TextEdit::singleline(&mut app.route_ui.text).font(theme::mono(13.0)).desired_width(w).hint_text("KSDL DRK KPRC");
         let r = ui.add(te);
-        let enter = r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
         if r.changed() {
-            app.route_ui.text = app.route_ui.text.to_uppercase().replace('\n', " ");
+            app.route_ui.text = app.route_ui.text.to_uppercase();
         }
-        ui.horizontal(|ui| {
-            let load = widgets::primary(ui, &t, "Load route").clicked();
-            let editing = app.saved.route.editing;
-            let label = if editing { format!("{}  Adding… (click map)", ph::CURSOR_CLICK) } else { format!("{}  Click map to add", ph::CURSOR_CLICK) };
-            let b = egui::Button::new(RichText::new(label).color(if editing { t.accent } else { t.text })).min_size(vec2(0.0, 32.0)).stroke(egui::Stroke::new(1.0, if editing { t.accent } else { t.line_strong }));
-            if ui.add(b).on_hover_text("Click the map to add waypoints").clicked() {
-                app.saved.route.editing = !editing;
-            }
-            if load || enter {
-                let text = app.route_ui.text.trim().to_string();
-                let (places, missing) = resolve(app, &text);
-                app.route_ui.unresolved = missing;
-                app.saved.route.replace(places);
-                app.route_ui.synced_rev = app.saved.route.rev;
-                app.fit_route();
-            }
-        });
-        if !app.route_ui.unresolved.is_empty() {
-            widgets::para(ui, format!("{}  Not found: {}", ph::WARNING, app.route_ui.unresolved.join(", ")), t.warn, 12.0);
+        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let load = ui.add(egui::Button::new(RichText::new(ph::ARROW_RIGHT).size(15.0).color(egui::Color32::WHITE)).fill(t.accent).min_size(vec2(30.0, 28.0))).on_hover_text("Load route (Enter)").clicked();
+        let editing = app.saved.route.editing;
+        let add = egui::Button::new(RichText::new(ph::CURSOR_CLICK).size(15.0).color(if editing { egui::Color32::WHITE } else { t.text2 })).fill(if editing { t.accent } else { t.surface2 }).min_size(vec2(30.0, 28.0));
+        if ui.add(add).on_hover_text(if editing { "Adding waypoints: click the map. Click here to stop." } else { "Click the map to add waypoints. You can also drag the route line to insert a waypoint, or drag a waypoint to move it." }).clicked() {
+            app.saved.route.editing = !editing;
         }
-        if !app.route_ui.import_error.is_empty() {
-            widgets::para(ui, format!("{}  {}", ph::WARNING, app.route_ui.import_error), t.warn, 12.0);
+        if load || enter {
+            let text = app.route_ui.text.trim().to_string();
+            let (places, missing) = resolve(app, &text);
+            app.route_ui.unresolved = missing;
+            app.saved.route.replace(places);
+            app.route_ui.synced_rev = app.saved.route.rev;
+            app.fit_route();
         }
-        widgets::para(ui, "Tip: drag the magenta line to add a waypoint (rubber-band), or drag a waypoint to move it.", t.text3, 11.5);
     });
     super::tour::mark(ui.ctx(), "route-entry", entry.response.rect);
+    if app.saved.route.editing {
+        widgets::para(ui, format!("{}  Click the map to add waypoints", ph::CURSOR_CLICK), t.accent, 11.5);
+    }
+    if !app.route_ui.unresolved.is_empty() {
+        widgets::para(ui, format!("{}  Not found: {}", ph::WARNING, app.route_ui.unresolved.join(", ")), t.warn, 12.0);
+    }
+    if !app.route_ui.import_error.is_empty() {
+        widgets::para(ui, format!("{}  {}", ph::WARNING, app.route_ui.import_error), t.warn, 12.0);
+    }
 
-    section(ui, &t, "Flight");
-    egui::Grid::new("flight").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
-        faint(ui, &t, "Aircraft");
-        let current = app.fleet.active().map(|a| format!("{} · {}", if a.tail.is_empty() { &a.type_code } else { &a.tail }, a.name)).unwrap_or_default();
-        egui::ComboBox::from_id_salt("route-ac").selected_text(current).width(230.0).show_ui(ui, |ui| {
+    // ---- aircraft · altitude · departure ----
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let current = app.fleet.active().map(|a| if a.tail.is_empty() { a.type_code.clone() } else { a.tail.clone() }).unwrap_or_default();
+        egui::ComboBox::from_id_salt("route-ac").selected_text(format!("{}  {current}", ph::AIRPLANE_TILT)).width(104.0).show_ui(ui, |ui| {
             for a in &app.fleet.list {
                 ui.selectable_value(&mut app.fleet.active, a.id.clone(), format!("{} · {}", if a.tail.is_empty() { &a.type_code } else { &a.tail }, a.name));
             }
         });
-        ui.end_row();
-        faint(ui, &t, "Cruise altitude");
-        ui.horizontal(|ui| {
-            ui.add(egui::DragValue::new(&mut app.saved.route.cruise).speed(50.0).range(500.0..=45000.0).suffix(" ft"));
-            ui.menu_button(RichText::new(ph::CARET_DOWN), |ui| {
-                for a in [3500.0, 4500.0, 5500.0, 6500.0, 7500.0, 8500.0, 9500.0, 10500.0, 11500.0, 12500.0] {
-                    if ui.button(format!("{} ft", thousands(a))).clicked() {
-                        app.saved.route.cruise = a;
-                        ui.close();
+        let alt = ui.add(egui::DragValue::new(&mut app.saved.route.cruise).speed(50.0).range(500.0..=45000.0).custom_formatter(|v, _| format!("{} ft", thousands(v))).custom_parser(|s| s.replace([',', ' '], "").trim_end_matches("ft").parse().ok()));
+        alt.on_hover_text("Cruise altitude: drag or type");
+        ui.menu_button(RichText::new(ph::CARET_DOWN).size(12.0), |ui| {
+            for a in [3500.0, 4500.0, 5500.0, 6500.0, 7500.0, 8500.0, 9500.0, 10500.0, 11500.0, 12500.0] {
+                if ui.button(format!("{} ft", thousands(a))).clicked() {
+                    app.saved.route.cruise = a;
+                    ui.close();
+                }
+            }
+        });
+        let dep = app.saved.route.departure_time().with_timezone(&chrono::Local);
+        let label = if app.saved.route.departure.is_empty() { format!("{}  Now", ph::CLOCK) } else { format!("{}  {}", ph::CLOCK, dep.format("%a %H:%M")) };
+        ui.menu_button(label, |ui| {
+            ui.set_width(220.0);
+            faint(ui, &t, "Departure (local). Or drag the timeline under the chart.");
+            let r = ui.add(egui::TextEdit::singleline(&mut app.saved.route.departure).hint_text("YYYY-MM-DD HH:MM").desired_width(200.0));
+            if r.lost_focus() {
+                app.saved.route.departure = normalize_time(&app.saved.route.departure);
+            }
+            ui.horizontal_wrapped(|ui| {
+                if ui.small_button("Now").clicked() {
+                    app.saved.route.departure.clear();
+                }
+                for (label, h) in [("+1 h", 1), ("+3 h", 3), ("+1 day", 24)] {
+                    if ui.small_button(label).clicked() {
+                        let base = app.saved.route.departure_time() + chrono::Duration::hours(h);
+                        super::timeline::set_departure(app, base);
                     }
                 }
             });
         });
-        ui.end_row();
-        faint(ui, &t, "Departure (local)");
-        ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut app.saved.route.departure).hint_text("now  ·  YYYY-MM-DD HH:MM").desired_width(160.0));
-            if r.lost_focus() {
-                app.saved.route.departure = normalize_time(&app.saved.route.departure);
-            }
-            if ui.small_button("Now").clicked() {
-                app.saved.route.departure.clear();
-            }
-            if ui.small_button("+1 h").clicked() {
-                let base = app.saved.route.departure_time() + chrono::Duration::hours(1);
-                app.saved.route.departure = base.with_timezone(&chrono::Local).format("%Y-%m-%dT%H:%M").to_string();
-            }
-        });
-        ui.end_row();
     });
     if let Some((alt, east)) = suggested(app) {
         if app.saved.route.cruise != alt {
-            let text = format!("Suggested VFR altitude {} ({}, clears terrain by 1,000 ft+)", thousands(alt), if east { "eastbound, odd + 500" } else { "westbound, even + 500" });
-            if ui.add(egui::Button::new(RichText::new(text).size(12.0).color(t.text2)).fill(t.surface2).wrap()).clicked() {
+            let tip = format!("{}, clears terrain within 1 NM by 1,000 ft or more", if east { "Eastbound: odd thousands + 500" } else { "Westbound: even thousands + 500" });
+            if widgets::link(ui, &t, format!("Use {} ft (suggested VFR altitude)", thousands(alt))).on_hover_text(tip).clicked() {
                 app.saved.route.cruise = alt;
             }
         }
     }
 
-    section(ui, &t, "Waypoints");
+    // ---- waypoints ----
     if app.saved.route.waypoints.is_empty() {
-        widgets::para(ui, "No waypoints yet. Type a route above, search with /, or turn on \"Click map to add\".", t.text2, 12.5);
+        ui.add_space(8.0);
+        widgets::para(ui, "Type a route above and press Enter, search with /, or click the map after pressing the pointer button.", t.text2, 12.5);
+    } else {
+        section(ui, &t, "Waypoints");
     }
     let n = app.saved.route.waypoints.len();
     let mut op: Option<(&str, usize)> = None;
@@ -240,30 +269,32 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     let mut start = 0.0;
     for i in 0..n {
         let w = app.saved.route.waypoints[i].clone();
-        egui::Frame::new().fill(t.surface2).corner_radius(egui::CornerRadius::same(9)).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                if ui.add_enabled(i > 0, egui::Button::new(RichText::new(ph::CARET_UP).size(12.0).color(t.text3)).frame(false).min_size(vec2(16.0, 18.0))).on_hover_text("Move up").clicked() {
-                    op = Some(("up", i));
-                }
-                if ui.add_enabled(i + 1 < n, egui::Button::new(RichText::new(ph::CARET_DOWN).size(12.0).color(t.text3)).frame(false).min_size(vec2(16.0, 18.0))).on_hover_text("Move down").clicked() {
-                    op = Some(("down", i));
-                }
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let sub = if w.kind == Kind::Airport { w.name.clone() } else if w.detail.is_empty() { w.name.clone() } else { w.detail.clone() };
-                let label = ui.add(egui::Label::new(RichText::new(&w.id).font(theme::bold(13.5))).sense(egui::Sense::click())).on_hover_text("Show on the chart");
-                ui.add(egui::Label::new(RichText::new(sub).size(11.5).color(t.text3)).truncate());
-                if label.clicked() {
-                    fly = Some((w.lon, w.lat));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new(ph::X).size(13.0).color(t.text3)).frame(false)).on_hover_text("Remove").clicked() {
-                        op = Some(("remove", i));
-                    }
-                });
-            });
+        let row = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let (r, _) = ui.allocate_exact_size(vec2(12.0, 16.0), egui::Sense::hover());
+            let end = i == 0 || i + 1 == n;
+            ui.painter().circle(r.center(), if end { 5.0 } else { 3.5 }, if end { t.accent } else { t.surface_solid }, egui::Stroke::new(2.0, t.accent));
+            let label = ui.add(egui::Label::new(RichText::new(&w.id).font(theme::bold(13.0))).sense(egui::Sense::click())).on_hover_text("Show on the chart");
+            if label.clicked() {
+                fly = Some((w.lon, w.lat));
+            }
+            let sub = if w.kind == Kind::Airport || w.detail.is_empty() { w.name.clone() } else { w.detail.clone() };
+            ui.add(egui::Label::new(RichText::new(sub).size(11.5).color(t.text3)).truncate());
         });
+        // row actions only on hover, to keep the list quiet
+        let hovered = ui.rect_contains_pointer(row.response.rect.expand2(vec2(0.0, 2.0)));
+        if hovered {
+            let r = row.response.rect;
+            let mut x = r.right();
+            for (icon, tip, what, enabled) in [(ph::X, "Remove", "remove", true), (ph::CARET_DOWN, "Move down", "down", i + 1 < n), (ph::CARET_UP, "Move up", "up", i > 0)] {
+                let br = egui::Rect::from_min_size(egui::pos2(x - 20.0, r.top()), vec2(20.0, r.height()));
+                x -= 22.0;
+                let resp = ui.put(br, egui::Button::new(RichText::new(icon).size(12.0).color(t.text3)).frame(false)).on_hover_text(tip);
+                if enabled && resp.clicked() {
+                    op = Some((what, i));
+                }
+            }
+        }
         if i + 1 < n {
             let b = &app.saved.route.waypoints[i + 1];
             let d = distance_nm(w.lat, w.lon, b.lat, b.lon);
@@ -271,12 +302,11 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             let ete: f64 = rows.iter().filter(|r| r.cum_dist - r.dist >= start - 0.01 && r.cum_dist <= start + d + 0.01).map(|r| r.ete).sum();
             start += d;
             ui.horizontal(|ui| {
-                ui.add_space(28.0);
-                let txt = if ete > 0.0 { format!("{}°M    {d:.1} NM    {}", deg(mc), fmt_time(ete)) } else { format!("{}°M    {d:.1} NM", deg(mc)) };
-                ui.label(RichText::new(txt).size(11.5).color(t.text3));
+                let (r, _) = ui.allocate_exact_size(vec2(12.0, 16.0), egui::Sense::hover());
+                ui.painter().vline(r.center().x, r.y_range(), egui::Stroke::new(1.5, t.accent.gamma_multiply(0.45)));
+                let txt = if ete > 0.0 { format!("{}°M · {d:.0} NM · {}", deg(mc), fmt_time(ete)) } else { format!("{}°M · {d:.0} NM", deg(mc)) };
+                ui.label(RichText::new(txt).size(11.0).color(t.text3));
             });
-        } else {
-            ui.add_space(4.0);
         }
     }
     match op {
@@ -292,31 +322,31 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         app.map.fly_to(lon, lat, 11.0);
     }
 
+    // ---- totals ----
     if let Some(log) = app.plan.log.clone() {
         ui.add_space(8.0);
-        ui.columns(4, |c| {
-            let stat = |ui: &mut egui::Ui, icon: &str, v: String, unit: &str, bad: bool| {
-                egui::Frame::new().fill(t.surface2).corner_radius(egui::CornerRadius::same(10)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new(icon).color(t.text3));
-                    ui.label(RichText::new(v).font(theme::bold(16.0)).color(if bad { t.bad } else { t.text }));
-                    ui.label(RichText::new(unit).size(10.5).color(t.text3));
-                });
-            };
-            stat(&mut c[0], ph::RULER, format!("{:.1}", log.total_dist), "NM", false);
-            stat(&mut c[1], ph::CLOCK, fmt_time(log.total_time), "ETE", false);
-            stat(&mut c[2], ph::GAS_PUMP, format!("{:.1}", log.trip_fuel), "gal trip", false);
-            stat(&mut c[3], ph::AIRPLANE_LANDING, format!("{:.1}", log.fuel_at_landing), "gal at landing", log.fuel_at_landing < log.reserve_fuel);
+        egui::Frame::new().fill(t.surface2).corner_radius(egui::CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.columns(4, |c| {
+                let stat = |ui: &mut egui::Ui, v: String, unit: &str, bad: bool| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(v).font(theme::bold(15.0)).color(if bad { t.bad } else { t.text }));
+                        ui.label(RichText::new(unit).size(10.5).color(t.text3));
+                    });
+                };
+                stat(&mut c[0], format!("{:.0}", log.total_dist), "NM", false);
+                stat(&mut c[1], fmt_time(log.total_time), "time", false);
+                stat(&mut c[2], format!("{:.1}", log.trip_fuel), "gal burn", false);
+                stat(&mut c[3], format!("{:.1}", log.fuel_at_landing), "gal left", log.fuel_at_landing < log.reserve_fuel);
+            });
         });
-        section(ui, &t, "Hazard advisor");
-        super::hazards::list(ui, &t, &app.plan.hazards, true);
-        ui.add_space(8.0);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let label = if app.saved.profile_open { "Hide profile" } else { "Show profile" };
+            let label = if app.saved.profile_open { "Hide profile" } else { "Profile" };
             if widgets::button(ui, format!("{}  {label}", ph::CHART_LINE)).clicked() {
                 app.saved.profile_open = !app.saved.profile_open;
             }
-            if widgets::button(ui, format!("{}  Navlog & briefing", ph::FILE_TEXT)).clicked() {
+            if widgets::button(ui, format!("{}  Briefing", ph::FILE_TEXT)).clicked() {
                 app.briefing = Some(super::briefing::Briefing::new(app));
             }
         });
@@ -325,7 +355,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             "open-meteo" => "Open-Meteo GFS",
             _ => "loading…",
         };
-        faint(ui, &t, format!("Winds: {src} · Magnetic variation: WMM-2025"));
+        faint(ui, &t, format!("Winds aloft: {src}"));
     }
     if app.plan.loading {
         faint(ui, &t, "Updating the profile…");

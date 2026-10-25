@@ -3,7 +3,7 @@
 //! action the app waits for the chart to settle and saves <FP_SHOT_DIR>/<name>.png, then quits
 //! after the last step. Actions: panel <route|layers|weather|aircraft|settings|help|none>,
 //! route <text>, view <lon> <lat> <zoom>, night, day, airport <id>, onboarding <step>,
-//! finish-onboarding, briefing, export, wizard, import, tour, wait.
+//! finish-onboarding, briefing, export, wizard, import, tour, depart <hours>, wait.
 
 use crate::app::{App, Dialog, Panel, Selection};
 use std::path::PathBuf;
@@ -153,6 +153,13 @@ pub fn act(app: &mut App, a: &str, arg: &str, dir: &std::path::Path) {
             "import" => app.dialog = Some(Dialog::Import(Box::default())),
             "tour" => app.tour = Some(super::tour::Tour::default()),
             "profile" => app.saved.profile_open = arg != "off",
+            "cruise" => app.saved.route.cruise = arg.parse().unwrap_or(6500.0),
+            "settings-open" => app.panel = Panel::Settings,
+            // depart <hours from now>
+            "depart" => {
+                let h: f64 = arg.parse().unwrap_or(0.0);
+                super::timeline::set_departure(app, chrono::Utc::now() + chrono::Duration::minutes((h * 60.0) as i64));
+            }
             "wx" => {
                 for k in arg.split(',') {
                     match k {

@@ -245,7 +245,8 @@ pub fn show(app: &mut App, ctx: &egui::Context, w: &mut Wizard) -> bool {
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             for (i, s) in steps.iter().enumerate() {
-                let reachable = i <= w.step || w.edit.is_some() || !w.started_from.is_empty();
+                // jump back freely; forward only past steps that are complete
+                let reachable = i <= w.step || ((w.edit.is_some() || !w.started_from.is_empty()) && steps[..i].iter().all(|s| w.step_issue(s).is_none()));
                 let txt = RichText::new(*s).font(theme::semibold(11.0)).color(if i == w.step { t.accent } else if i < w.step { t.text2 } else { t.text3 });
                 if ui.add_enabled(reachable, egui::Button::new(txt).fill(if i == w.step { t.accent_soft } else { t.surface2 }).corner_radius(99)).clicked() {
                     w.step = i;
@@ -269,7 +270,6 @@ pub fn show(app: &mut App, ctx: &egui::Context, w: &mut Wizard) -> bool {
                     }
                     if widgets::card(ui, &t, ph::UPLOAD_SIMPLE, "Import a file", "A Flightplan aircraft file from another pilot, club or backup", width).clicked() {
                         open = false;
-                        app.dialog = None;
                         app.dialog = Some(crate::app::Dialog::Import(Box::default()));
                     }
                 });
@@ -513,11 +513,10 @@ pub fn show(app: &mut App, ctx: &egui::Context, w: &mut Wizard) -> bool {
         });
         ui.add_space(8.0);
         widgets::rule(ui, &t);
+        let issue = if current != "Start" && current != "Review" { w.step_issue(current) } else { None };
         ui.horizontal(|ui| {
-            if current != "Start" && current != "Review" {
-                if let Some(issue) = w.step_issue(current) {
-                    faint(ui, &t, issue);
-                }
+            if let Some(issue) = issue {
+                ui.label(RichText::new(format!("{}  {issue}", ph::WARNING)).size(12.0).color(t.warn));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if current == "Review" {
@@ -537,8 +536,12 @@ pub fn show(app: &mut App, ctx: &egui::Context, w: &mut Wizard) -> bool {
                             open = false;
                         }
                     }
-                } else if current != "Start" && widgets::primary(ui, &t, format!("Next  {}", ph::ARROW_RIGHT)).clicked() {
-                    w.step += 1;
+                } else if current != "Start" {
+                    // a step with a missing essential can't be skipped past
+                    let next = egui::Button::new(RichText::new(format!("Next  {}", ph::ARROW_RIGHT)).color(egui::Color32::WHITE).font(theme::semibold(13.0))).fill(t.accent).min_size(vec2(0.0, 32.0));
+                    if ui.add_enabled(issue.is_none(), next).on_disabled_hover_text(issue.unwrap_or_default()).clicked() {
+                        w.step += 1;
+                    }
                 }
                 if w.step > 0 && widgets::button(ui, format!("{}  Back", ph::ARROW_LEFT)).clicked() {
                     w.step -= 1;

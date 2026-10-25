@@ -14,9 +14,14 @@ pub struct Route {
     /// clicking the map adds waypoints
     #[serde(skip)]
     pub editing: bool,
-    /// bumped on every change to the waypoints (drives profile / wind refetches)
-    #[serde(skip)]
+    /// bumped on every change to the waypoints (drives profile / wind refetches); starts at 1
+    /// so a route restored from disk differs from "nothing fetched yet" (0)
+    #[serde(skip, default = "first_rev")]
     pub rev: u64,
+}
+
+fn first_rev() -> u64 {
+    1
 }
 
 impl Default for Route {
@@ -98,6 +103,11 @@ impl Route {
         self.waypoints.iter().map(|w| w.id.as_str()).collect::<Vec<_>>().join(" ")
     }
 
+    #[cfg(test)]
+    pub fn restored(json: &str) -> Route {
+        serde_json::from_str(json).unwrap()
+    }
+
     pub fn departure_time(&self) -> chrono::DateTime<chrono::Utc> {
         use chrono::TimeZone;
         chrono::NaiveDateTime::parse_from_str(&self.departure, "%Y-%m-%dT%H:%M")
@@ -109,5 +119,14 @@ impl Route {
 
     pub fn places(&self) -> Vec<&Place> {
         self.waypoints.iter().map(|w| &w.place).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn restored_route_needs_a_fetch() {
+        let r = super::Route::restored(r#"{"waypoints": [], "cruise": 6500.0, "departure": ""}"#);
+        assert_eq!(r.rev, 1, "0 means 'already fetched' to the plan");
     }
 }

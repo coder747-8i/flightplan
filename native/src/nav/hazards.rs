@@ -1,16 +1,17 @@
 //! Hazard advisor: scans the planned flight for terrain, obstacles, airspace, TFRs, weather
-//! advisories, fuel, weight & balance, night arrival, density altitude and crosswind.
+//! advisories, fuel, weight & balance and night arrival. Departure / destination weather is
+//! judged at ETD / ETA by the go / no-go verdict (nav/verdict.rs).
 
 use super::geo::{in_ring, BBox};
 use super::navlog::{thousands, NavLog};
 use super::profile::{alt_at, Level, Profile};
 use super::sun::sun_times;
 use crate::model::aircraft::{compute_wb, Aircraft};
-use crate::model::place::{Kind, Waypoint};
-use crate::wx::decode::{decode_metar, describe_sigmet, str_of};
+use crate::model::place::Waypoint;
+use crate::wx::decode::{describe_sigmet, str_of};
 use chrono::{DateTime, Duration, Local, Utc};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub struct Hazard {
@@ -32,10 +33,6 @@ pub struct HazardInput<'a> {
     pub tfrs: &'a Value,
     pub sigmets: &'a [Value],
     pub gairmets: &'a [Value],
-    /// METAR records by ICAO id (departure / destination)
-    pub metars: &'a HashMap<String, Value>,
-    /// (runway end id, true heading) by airport id
-    pub runways: &'a HashMap<String, Vec<(String, f64)>>,
 }
 
 fn fmt_alt(v: f64) -> String {
@@ -267,69 +264,6 @@ pub fn analyze(h: &HazardInput) -> Vec<Hazard> {
     }
 
     out.extend(lateral(h, total));
-
-    // ---- departure / destination weather ----
-    let ends = [h.waypoints.first(), h.waypoints.last()];
-    for (i, w) in ends.into_iter().enumerate() {
-        let Some(w) = w.filter(|w| w.kind == Kind::Airport) else { continue };
-        let id = w.wx_id();
-        let Some(m) = h.metars.get(&id) else { continue };
-        let place = if i == 0 { "Departure" } else { "Destination" };
-        let plain: Vec<String> = decode_metar(&str_of(&m["rawOb"]))
-            .into_iter()
-            .filter(|l| ["Visibility", "Broken", "Overcast", "Sky", "Wind"].iter().any(|p| l.starts_with(p)) || ["rain", "snow", "fog", "mist", "thunder", "drizzle", "haze", "smoke"].iter().any(|w| l.to_lowercase().contains(w)))
-            .collect();
-        let plain = plain.join(". ");
-        let cat = str_of(&m["fltCat"]);
-        if cat == "IFR" || cat == "LIFR" {
-            push(&mut out, Level::Warning, "Weather", format!("{place} {id} is {cat}"), plain.clone(), None);
-        } else if cat == "MVFR" {
-            push(&mut out, Level::Caution, "Weather", format!("{place} {id} is marginal VFR"), plain.clone(), None);
-        }
-        // crosswind
-        let rwys = h.runways.get(&w.id).cloned().unwrap_or_default();
-        if let (Some(wspd), Some(wdir), Some(ac)) = (m["wspd"].as_f64().filter(|v| *v > 0.0), m["wdir"].as_f64(), h.aircraft) {
-            if !rwys.is_empty() {
-                let gust = m["wgst"].as_f64().unwrap_or(wspd);
-                let best = rwys
-                    .iter()
-                    .map(|(id, hdg)| {
-                        let a = (wdir - hdg).to_radians();
-                        (id.clone(), (gust * a.sin()).abs(), gust * a.cos())
-                    })
-                    .filter(|r| r.2 > -5.0)
-                    .min_by(|a, b| a.1.total_cmp(&b.1));
-                let limit = ac.perf.max_xwind;
-                let gtxt = m["wgst"].as_f64().map(|g| format!(" gusting {g}")).unwrap_or_default();
-                if let Some((rid, x, _)) = best {
-                    if x > limit {
-                        push(&mut out, Level::Warning, "Weather", format!("{place} crosswind {} kt on the best runway ({rid})", x.round()), format!("Above the {limit} kt demonstrated crosswind for this aircraft. Wind {wdir}° at {wspd}{gtxt} kt."), None);
-                    } else if x > limit * 0.75 {
-                        push(&mut out, Level::Caution, "Weather", format!("{place} crosswind {} kt (runway {rid})", x.round()), format!("Wind {wdir}° at {wspd}{gtxt} kt."), None);
-                    }
-                }
-            }
-        }
-        // density altitude
-        if i == 0 {
-            if let (Some(temp), Some(altim), Some(elev)) = (m["temp"].as_f64(), m["altim"].as_f64(), m["elev"].as_f64()) {
-                let elev_ft = elev * 3.28084;
-                let pa = elev_ft + (1013.25 - altim) * 30.0;
-                let isa = 15.0 - 2.0 * pa / 1000.0;
-                let da = pa + 120.0 * (temp - isa);
-                if da > 5000.0 {
-                    push(
-                        &mut out,
-                        if da > 8000.0 { Level::Warning } else { Level::Caution },
-                        "Performance",
-                        format!("Density altitude {} ft at {id}", thousands((da / 100.0).round() * 100.0)),
-                        format!("Field elevation {} ft, {}°F. Expect longer takeoff roll and reduced climb. Check the POH charts.", elev_ft.round(), (temp * 9.0 / 5.0 + 32.0).round()),
-                        None,
-                    );
-                }
-            }
-        }
-    }
 
     // ---- fuel ----
     if log.fuel_at_landing < 0.0 {

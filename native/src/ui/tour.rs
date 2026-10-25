@@ -27,14 +27,16 @@ struct Step {
     panel: Option<Panel>,
 }
 
-const STEPS: [Step; 12] = [
+const STEPS: [Step; 14] = [
     Step { target: "search", title: "Search", text: "Find any airport, navaid or fix. Press / from anywhere to jump here.", panel: None },
     Step { target: "rail-route", title: "Route", text: "Type a route or click the map to build one. Your aircraft, altitude and departure time live here too.", panel: Some(Panel::Route) },
-    Step { target: "route-entry", title: "Route entry", text: "Enter identifiers and lat/longs separated by spaces, then Load route. Or turn on \"Click map to add\".", panel: Some(Panel::Route) },
-    Step { target: "route-export", title: "Export", text: "Send the finished route to FltPlan.com, or save a Garmin .fpl or GPX file. The folder button next to it opens .fpl/.gpx files.", panel: Some(Panel::Route) },
+    Step { target: "route-entry", title: "Route entry", text: "Enter identifiers and lat/longs separated by spaces and press Enter. The pointer button lets you click the map to add points instead.", panel: Some(Panel::Route) },
+    Step { target: "route-verdict", title: "Go / no-go", text: "A green, yellow or red call for the flight at your departure time: weather at both ends against your personal minimums, wind and crosswind, thunderstorms and icing along the route, terrain, airspace, fuel and weight & balance. Set your minimums in Settings.", panel: Some(Panel::Route) },
+    Step { target: "timeline", title: "Timeline", text: "Drag to plan up to five days ahead. Radar, winds, forecasts and the go / no-go call follow the time you pick; green stretches are good windows to fly. Press play to animate the forecast radar.", panel: None },
+    Step { target: "route-export", title: "Export", text: "Send the route to FltPlan Go with a QR code (nothing gets filed), fill FltPlan.com's form, or save a Garmin .fpl, GPX or KML file. The folder button next to it opens .fpl/.gpx files.", panel: Some(Panel::Route) },
     Step { target: "rail-layers", title: "Layers", text: "Switch chart layers on and off: airspace classes, special use airspace, airports, navaids, airways, obstacles.", panel: Some(Panel::Layers) },
     Step { target: "altitude", title: "Altitude filter", text: "Show only the airspace that matters in your altitude band.", panel: None },
-    Step { target: "rail-weather", title: "Weather", text: "Radar, METARs, TAFs, PIREPs, SIGMETs, G-AIRMETs, TFRs and winds aloft.", panel: Some(Panel::Weather) },
+    Step { target: "rail-weather", title: "Weather", text: "Radar (live, then forecast), flight categories, winds aloft, TFRs, AIRMETs / SIGMETs, G-AIRMETs and PIREPs, plus the forecast at your departure and arrival.", panel: Some(Panel::Weather) },
     Step { target: "rail-aircraft", title: "Aircraft", text: "Load the airplane and check weight & balance. Create, edit, import and export airframes here.", panel: Some(Panel::Aircraft) },
     Step { target: "aircraft-new", title: "New aircraft", text: "The guided editor walks through performance, stations and the CG envelope.", panel: Some(Panel::Aircraft) },
     Step { target: "profile", title: "Profile", text: "Terrain, obstacles and airspace along the route at your planned altitude. Shows up once a route has two points.", panel: None },

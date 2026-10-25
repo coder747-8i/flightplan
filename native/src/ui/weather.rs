@@ -87,56 +87,85 @@ pub fn station(ui: &mut egui::Ui, app: &mut App, id: &str, metar: Option<&Value>
     }
 }
 
+/// Forecast at the planned time for the departure or destination, one compact block.
+fn at_your_time(ui: &mut egui::Ui, app: &App, role: &str, stn: Option<&crate::wx::forecast::StationWx>, when: chrono::DateTime<chrono::Utc>) {
+    let t = app.t;
+    let Some(s) = stn.filter(|s| !s.station.is_empty()) else { return };
+    let local = when.with_timezone(&chrono::Local);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("{role} {}", s.airport)).font(theme::semibold(12.5)));
+        faint(ui, &t, format!("{}", local.format("%a %H:%M")));
+    });
+    match s.at(when) {
+        Some(c) => {
+            ui.horizontal_wrapped(|ui| {
+                if let Some(cat) = c.category() {
+                    widgets::chip(ui, &t, cat, Some(egui::Color32::WHITE), Some(theme::flt_cat(cat)));
+                }
+                ui.add(egui::Label::new(RichText::new(c.summary()).size(12.0)).wrap());
+            });
+            let from = if c.station != s.airport && s.offset_nm > 1.0 { format!(" from {} ({:.0} NM)", c.station, s.offset_nm) } else { String::new() };
+            faint(ui, &t, format!("{}{from}", c.source.label()));
+            if let Some((_, text)) = &c.tempo {
+                faint(ui, &t, text.clone());
+            }
+        }
+        None => {
+            faint(ui, &t, "No forecast covers this time yet");
+        }
+    }
+    ui.add_space(4.0);
+}
+
 pub fn panel(app: &mut App, ctx: &egui::Context) {
     let t = app.t;
     let ids: Vec<String> = app.saved.route.waypoints.iter().filter(|w| w.kind == crate::model::place::Kind::Airport).map(|w| w.wx_id()).collect();
     app.route_wx.update(ids, &app.be, false);
     let subtitle = app.wx.updated.map(|u| format!("Advisories updated {}", u.format("%H:%M"))).unwrap_or_else(|| "Loading…".into());
     let close = widgets::side_panel(ctx, &t, "panel-weather", "Weather", &subtitle, 340.0, app, |_, _| false, |ui, app| {
-        // Windy itself is a web map; the desktop app draws winds aloft natively and links out
-        Frame::new().fill(t.blue.gamma_multiply(0.12)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(12)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(format!("{}  Winds aloft on the chart", ph::WIND)).font(theme::semibold(13.0)));
-            widgets::para(ui, "Wind barbs and temperatures at a level you pick, for your departure time. Uses Windy's point forecast when you have a key, Open-Meteo GFS otherwise.", t.text2, 11.5);
+        section(ui, &t, "On the chart");
+        let radar_hint = match &app.chart.radar_frame {
+            Some(f) => f.label(),
+            None => "Live NEXRAD now; HRRR forecast radar to 48 h and model precipitation to 5 days as you move the timeline".into(),
+        };
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.radar, "Radar", &radar_hint, Some(crate::wx::radar::dbz_color(30.0)));
+        if app.saved.wx.radar {
             ui.horizontal(|ui| {
-                widgets::switch(ui, &t, &mut app.saved.wx.winds);
+                ui.add_space(18.0);
+                faint(ui, &t, "Opacity");
+                ui.spacing_mut().slider_width = 150.0;
+                ui.add(egui::Slider::new(&mut app.saved.radar_opacity, 0.2..=1.0).show_value(false));
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                for dbz in [10.0, 20.0, 30.0, 40.0, 50.0, 60.0] {
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(22.0, 6.0), egui::Sense::hover());
+                    ui.painter().rect_filled(r, CornerRadius::same(2), crate::wx::radar::dbz_color(dbz));
+                }
+                faint(ui, &t, "light → heavy");
+            });
+        }
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.metars, "Flight category", "METAR dots: green VFR, blue MVFR, red IFR, purple LIFR", Some(theme::flt_cat("VFR")));
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.winds, "Winds aloft", "Wind barbs and temperatures at the level you pick, for the timeline's time (Windy point forecast with a key, Open-Meteo GFS otherwise)", Some(crate::ui::chart::speed_color(30.0)));
+        if app.saved.wx.winds {
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
                 egui::ComboBox::from_id_salt("wind-level").selected_text(WIND_LEVELS[app.saved.wind_level.min(WIND_LEVELS.len() - 1)].1).show_ui(ui, |ui| {
                     for (i, (_, label)) in WIND_LEVELS.iter().enumerate() {
                         ui.selectable_value(&mut app.saved.wind_level, i, *label);
                     }
                 });
             });
-            ui.horizontal(|ui| {
-                if widgets::link(ui, &t, format!("{} Open Windy.com here", ph::ARROW_SQUARE_OUT)).clicked() {
-                    let (lon, lat) = app.map.center_lonlat();
-                    let _ = open::that(format!("https://www.windy.com/?{lat:.3},{lon:.3},{}", app.map.zoom.round()));
-                }
-            });
-        });
-
-        section(ui, &t, "On the chart");
-        widgets::toggle_row(ui, &t, &mut app.saved.wx.metars, "METAR flight category", "Dots: VFR, MVFR, IFR, LIFR", None);
-        ui.horizontal(|ui| {
-            for c in ["VFR", "MVFR", "IFR", "LIFR"] {
-                ui.label(RichText::new("●").color(theme::flt_cat(c)));
-                ui.label(RichText::new(c).size(11.0).color(t.text2));
-            }
-        });
-        widgets::toggle_row(ui, &t, &mut app.saved.wx.radar, "Radar (NEXRAD)", "Composite reflectivity, ~5 min", None);
-        if app.saved.wx.radar {
-            ui.horizontal(|ui| {
-                faint(ui, &t, "Opacity");
-                ui.add(egui::Slider::new(&mut app.saved.radar_opacity, 0.2..=1.0).show_value(false));
-            });
         }
         let n_tfr = app.wx.tfrs["features"].as_array().map(|a| a.len()).unwrap_or(0);
-        widgets::toggle_row(ui, &t, &mut app.saved.wx.tfr, "TFRs", &format!("{n_tfr} active shapes"), Some(egui::Color32::from_rgb(0xd2, 0x3a, 0x3a)));
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.tfr, "TFRs", &format!("{n_tfr} active shapes"), Some(egui::Color32::from_rgb(0xd2, 0x3a, 0x3a)));
         let active = app.wx.active_sigmets().len();
-        widgets::toggle_row(ui, &t, &mut app.saved.wx.sigmet, "AIRMETs & SIGMETs", &format!("{active} in effect"), Some(egui::Color32::from_rgb(0xe0, 0x45, 0x2b)));
-        widgets::toggle_row(ui, &t, &mut app.saved.wx.gairmet, "G-AIRMETs", "IFR, mountain obscuration, turbulence, icing, freezing level", Some(egui::Color32::from_rgb(0x7b, 0x4f, 0xc9)));
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.sigmet, "AIRMETs & SIGMETs", &format!("{active} in effect"), Some(egui::Color32::from_rgb(0xe0, 0x45, 0x2b)));
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.gairmet, "G-AIRMETs", "IFR, mountain obscuration, turbulence, icing, freezing level", Some(egui::Color32::from_rgb(0x7b, 0x4f, 0xc9)));
         let hours = app.wx.gairmet_hours();
         if app.saved.wx.gairmet && hours.len() > 1 {
             ui.horizontal_wrapped(|ui| {
+                ui.add_space(18.0);
                 for h in hours {
                     let on = app.wx.gairmet_hour == h;
                     if ui.selectable_label(on, format!("+{h} h")).clicked() {
@@ -145,14 +174,35 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
                 }
             });
         }
-        widgets::toggle_row(ui, &t, &mut app.saved.wx.pireps, "PIREPs", "Last 3 hours; blue icing, orange turbulence", Some(egui::Color32::from_rgb(0xd4, 0x8a, 0x0b)));
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.pireps, "PIREPs", "Last 3 hours; blue icing, orange turbulence, red severe", Some(egui::Color32::from_rgb(0xd4, 0x8a, 0x0b)));
+
+        // ---- the route at the planned time ----
+        if app.saved.route.waypoints.len() >= 2 {
+            section(ui, &t, "Your flight");
+            let dep = app.saved.route.departure_time();
+            let eta = app.plan.log.as_ref().map(|l| dep + chrono::Duration::milliseconds((l.total_time * 60_000.0) as i64)).unwrap_or(dep);
+            let fc = &app.plan.forecast;
+            if fc.loading && fc.dep.is_none() {
+                faint(ui, &t, "Fetching forecasts…");
+            }
+            at_your_time(ui, app, "Departure", fc.dep.as_ref(), dep);
+            at_your_time(ui, app, "Arrival", fc.dest.as_ref(), eta);
+        }
+
+        let list = app.route_wx.list.clone();
+        widgets::fold(ui, &t, "wx-fold-metars", &format!("METARs & TAFs ({})", list.len()), false, |ui| {
+            if list.is_empty() {
+                widgets::para(ui, "Add airports to your route to see their METARs and TAFs here.", t.text2, 12.5);
+            }
+            for (id, m, tf) in &list {
+                station(ui, app, id, m.as_ref(), tf.as_ref());
+                widgets::rule(ui, &t);
+            }
+        });
 
         let sigs: Vec<Value> = app.wx.active_sigmets().into_iter().cloned().collect();
-        if !sigs.is_empty() {
-            section(ui, &t, "AIRMETs & SIGMETs in effect");
-            let id = ui.id().with("allsig");
-            let mut all = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
-            for s in sigs.iter().take(if all { 99 } else { 4 }) {
+        widgets::fold(ui, &t, "wx-fold-sigmets", &format!("Advisories in effect ({})", sigs.len()), false, |ui| {
+            for s in &sigs {
                 Frame::new().fill(t.surface2).corner_radius(CornerRadius::same(9)).inner_margin(Margin::same(10)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     if super::wxtext::show(ui, &t, super::wxtext::Kind::Sigmet(s), app.saved.raw_wx, true) {
@@ -161,23 +211,19 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
                 });
                 ui.add_space(4.0);
             }
-            if sigs.len() > 4 && widgets::link(ui, &t, if all { "Show fewer".to_string() } else { format!("Show all {}", sigs.len()) }).clicked() {
-                all = !all;
-                ui.data_mut(|d| d.insert_temp(id, all));
-            }
-        }
+        });
 
-        section(ui, &t, "Along your route");
-        let list = app.route_wx.list.clone();
-        if list.is_empty() {
-            widgets::para(ui, "Add airports to your route to see their METARs and TAFs here.", t.text2, 12.5);
-        }
-        for (id, m, tf) in &list {
-            station(ui, app, id, m.as_ref(), tf.as_ref());
-            widgets::rule(ui, &t);
-        }
-        ui.add_space(6.0);
-        widgets::para(ui, "Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet, Open-Meteo / Windy. Check an official briefing (1800wxbrief) before flight.", t.text3, 11.0);
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if widgets::link(ui, &t, format!("{} Windy.com", ph::ARROW_SQUARE_OUT)).clicked() {
+                let (lon, lat) = app.map.center_lonlat();
+                let _ = open::that(format!("https://www.windy.com/?{lat:.3},{lon:.3},{}", app.map.zoom.round()));
+            }
+            if widgets::link(ui, &t, format!("{} 1800wxbrief", ph::ARROW_SQUARE_OUT)).clicked() {
+                let _ = open::that("https://www.1800wxbrief.com/");
+            }
+        });
+        widgets::para(ui, "Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet (NEXRAD, HRRR, NBM), Open-Meteo / Windy. Get an official briefing before flight.", t.text3, 10.5);
     });
     if close {
         app.panel = Panel::None;

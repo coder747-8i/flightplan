@@ -29,7 +29,15 @@ pub struct ChartUi {
     drag: Option<RouteDrag>,
     drag_from: Option<Pos2>,
     pub cursor: Option<(f64, f64)>,
-    radar: HashMap<(u8, u32, u32, i64), RadarTile>,
+    radar: HashMap<(String, i64, u8, u32, u32), RadarTile>,
+    /// recently shown radar layers, newest last (tiles of older ones are dropped)
+    radar_layers: Vec<(String, i64)>,
+    pub runs: crate::wx::radar::Runs,
+    pub model: crate::wx::radar::ModelGrid,
+    /// what the radar layer is showing (for the timeline's label)
+    pub radar_frame: Option<crate::wx::radar::Frame>,
+    /// tiles of the current frame still loading
+    pub radar_loading: bool,
 }
 
 enum RadarTile {
@@ -437,45 +445,79 @@ fn pirep_color(p: &Value) -> Color32 {
 
 fn draw_radar(app: &mut App, painter: &Painter, proj: &Proj) {
     if !app.saved.wx.radar {
+        app.chart.radar_frame = None;
         return;
     }
-    // IEM's NEXRAD composite, refreshed every 5 minutes
-    let bucket = chrono::Utc::now().timestamp() / 300;
+    use crate::wx::radar::{frame_for, Kind as RadarKind};
+    app.chart.runs.update(&app.be);
+    let now = chrono::Utc::now();
+    let frame = frame_for(app.saved.route.departure_time(), now, &app.chart.runs);
+    let tint = Color32::from_white_alpha((app.saved.radar_opacity * 255.0) as u8);
+    app.chart.radar_loading = false;
+    if frame.kind == RadarKind::Model {
+        let (w, s, e, n) = proj.bounds();
+        if let Some((tex, b)) = app.chart.model.update(&app.be, painter.ctx(), (w, s, e, n), proj.zoom, frame.valid) {
+            let r = Rect::from_min_max(proj.to_screen(b[0], b[3]), proj.to_screen(b[2], b[1]));
+            painter.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+        }
+        app.chart.radar_loading = app.chart.model.loading;
+        if app.chart.model.loading {
+            painter.ctx().request_repaint_after(Duration::from_millis(300));
+        }
+        app.chart.radar_frame = Some(frame);
+        return;
+    }
+    let layer = frame.layer.clone().unwrap_or_default();
+    let stamp = frame.valid.timestamp();
+    if app.chart.radar_layers.last() != Some(&(layer.clone(), stamp)) {
+        app.chart.radar_layers.retain(|l| l != &(layer.clone(), stamp));
+        app.chart.radar_layers.push((layer.clone(), stamp));
+        // keep a few frames so scrubbing back and forth doesn't refetch
+        if app.chart.radar_layers.len() > 8 {
+            app.chart.radar_layers.remove(0);
+        }
+        let keep = app.chart.radar_layers.clone();
+        app.chart.radar.retain(|k, _| keep.iter().any(|l| l.0 == k.0 && l.1 == k.1));
+    }
+    // HRRR tiles exist to zoom 8 on IEM's cache; NEXRAD to 8 as well
     let z = (proj.zoom.floor() as i32).clamp(3, 8) as u8;
     let n = 1u32 << z;
     let tl = proj.screen_to_world(proj.rect.left_top());
     let br = proj.screen_to_world(proj.rect.right_bottom());
-    let tint = Color32::from_white_alpha((app.saved.radar_opacity * 255.0) as u8);
     for y in ((tl[1] * n as f64).floor().max(0.0) as u32)..=((br[1] * n as f64).floor().min(n as f64 - 1.0) as u32) {
         for x in ((tl[0] * n as f64).floor().max(0.0) as u32)..=((br[0] * n as f64).floor().min(n as f64 - 1.0) as u32) {
-            let key = (z, x, y, bucket);
+            let key = (layer.clone(), stamp, z, x, y);
             if !app.chart.radar.contains_key(&key) {
                 let http = app.be.http.clone();
+                let url = frame.tile_url(z, x, y).unwrap_or_default();
                 let task = app.be.spawn(async move {
-                    let url = format!("https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png");
                     let b = http.get(url).send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
                     let img = image::load_from_memory(&b).ok()?.to_rgba8();
                     Some(egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()))
                 });
-                app.chart.radar.insert(key, RadarTile::Loading(task));
+                app.chart.radar.insert(key.clone(), RadarTile::Loading(task));
             }
             let entry = app.chart.radar.get_mut(&key).unwrap();
             if let RadarTile::Loading(t) = entry {
                 if let Some(img) = t.poll() {
                     *entry = match img {
-                        Some(img) => RadarTile::Ready(painter.ctx().load_texture(format!("radar-{z}-{x}-{y}"), img, egui::TextureOptions::LINEAR)),
+                        Some(img) => RadarTile::Ready(painter.ctx().load_texture(format!("radar-{}-{z}-{x}-{y}", key.0), img, egui::TextureOptions::LINEAR)),
                         None => RadarTile::Missing,
                     };
                 }
             }
-            if let RadarTile::Ready(tex) = entry {
-                let min = proj.world_to_screen([x as f64 / n as f64, y as f64 / n as f64]);
-                let size = (proj.size / n as f64) as f32;
-                painter.image(tex.id(), Rect::from_min_size(min, vec2(size, size)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+            match entry {
+                RadarTile::Ready(tex) => {
+                    let min = proj.world_to_screen([x as f64 / n as f64, y as f64 / n as f64]);
+                    let size = (proj.size / n as f64) as f32;
+                    painter.image(tex.id(), Rect::from_min_size(min, vec2(size, size)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+                }
+                RadarTile::Loading(_) => app.chart.radar_loading = true,
+                RadarTile::Missing => {}
             }
         }
     }
-    app.chart.radar.retain(|k, _| k.3 == bucket);
+    app.chart.radar_frame = Some(frame);
 }
 
 fn draw_advisories(app: &App, painter: &Painter, proj: &Proj) {
@@ -707,7 +749,7 @@ fn draw_dots(app: &App, ui: &egui::Ui, painter: &Painter, proj: &Proj) {
             }
             let c = crate::theme::flt_cat(&str_of(&m["fltCat"]));
             painter.circle(p, r, c, Stroke::new(1.5, Color32::WHITE));
-            if z >= 8.0 {
+            if z >= 9.5 {
                 let wind = match (m["wspd"].as_f64(), &m["wdir"]) {
                     (Some(s), d) => {
                         let dir = if d.as_str() == Some("VRB") { "VRB".to_string() } else { format!("{:03}", d.as_f64().unwrap_or(0.0) as i64) };

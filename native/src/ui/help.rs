@@ -19,6 +19,13 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
                 setup.set(true);
             }
         });
+        section(ui, &t, "Go / no-go");
+        widgets::para(
+            ui,
+            "With a route loaded, the Route panel gives a green (go), yellow (caution) or red (no-go) call for your departure time. It checks the departure and arrival weather (METAR within the hour, then the TAF, then NBM guidance out to about five days) against your personal minimums, crosswind on the best runway against the aircraft's limit, thunderstorms, icing and visibility along the route from model forecasts, strong winds aloft over mountains, terrain clearance, TFRs and prohibited / restricted areas, fuel reserve, weight & balance and night. Set your minimums under Settings. It's advice: you are the pilot in command.",
+            t.text2,
+            12.0,
+        );
         section(ui, &t, "Shortcuts");
         egui::Grid::new("keys").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
             for (k, v) in [("/", "Search airports, navaids and fixes"), ("Enter", "Load the route typed in the Route panel"), ("Shift+Enter", "Add a search result to the route"), ("Scroll / pinch", "Zoom the chart"), ("Double-click", "Zoom in"), ("Esc", "Close dialogs and the tour")] {

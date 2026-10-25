@@ -59,6 +59,11 @@ pub fn range_text(c: &Crossing) -> String {
     format!("{lo} – {hi}")
 }
 
+/// Height of the profile panel, open or collapsed.
+pub fn height(open: bool) -> f32 {
+    if open { H + 50.0 } else { 44.0 }
+}
+
 pub fn show(app: &mut App, ctx: &egui::Context) {
     if app.saved.route.waypoints.len() < 2 {
         return;
@@ -70,7 +75,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let width = if open { screen.width() - left - 12.0 } else { 220.0 };
     let show_e_id = egui::Id::new("profile-show-e");
     let mut show_e: bool = ctx.data(|d| d.get_temp(show_e_id)).unwrap_or(false);
-    let height = if open { H + 50.0 } else { 44.0 };
+    let height = height(open);
     let r = egui::Area::new("profile".into()).fixed_pos(pos2(screen.left() + left, screen.bottom() - 12.0 - height)).order(egui::Order::Middle).show(ctx, |ui| {
         glass(&t).inner_margin(Margin { left: 12, right: 12, top: 6, bottom: 8 }).show(ui, |ui| {
             ui.set_width(width - 24.0);

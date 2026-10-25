@@ -23,6 +23,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Panel::None => {}
     }
     super::profile::show(app, ctx);
+    super::timeline::show(app, ctx);
     super::info::show(app, ctx);
 }
 
@@ -54,6 +55,14 @@ fn rail(app: &mut App, ctx: &egui::Context) {
                 let items = [(Panel::Route, ph::PATH, "Route", "rail-route"), (Panel::Layers, ph::STACK, "Layers", "rail-layers"), (Panel::Weather, ph::CLOUD_SUN, "Weather", "rail-weather"), (Panel::Aircraft, ph::AIRPLANE_TILT, "Aircraft", "rail-aircraft")];
                 for (panel, icon, label, tid) in items {
                     let r = rail_button(ui, &t, icon, label, app.panel == panel);
+                    // the go / no-go call as a dot on the Route button
+                    if panel == Panel::Route {
+                        if let Some(v) = app.plan.verdict.as_ref().filter(|_| app.saved.route.waypoints.len() >= 2) {
+                            let c = super::verdict::color(&t, v.call);
+                            let p = r.rect.center() + vec2(11.0, -15.0);
+                            ui.painter().circle(p, 5.0, c, Stroke::new(2.0, t.surface_solid));
+                        }
+                    }
                     mark(ctx, tid, r.rect);
                     if r.clicked() {
                         app.panel = if app.panel == panel { Panel::None } else { panel };

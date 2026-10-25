@@ -1,5 +1,6 @@
-//! Route exchange formats: the FltPlan.com flight plan fields, Garmin .fpl (Garmin avionics SD
-//! cards, Garmin Pilot, ForeFlight, FltPlan Go via Garmin), and GPX; plus reading .fpl/.gpx back.
+//! Route exchange formats: the FltPlan.com flight plan fields, the FltPlan Go route string with
+//! its user waypoints as a KML custom-waypoint file, Garmin .fpl (Garmin avionics SD cards,
+//! Garmin Pilot, ForeFlight), and GPX; plus reading .fpl/.gpx back.
 
 use crate::model::aircraft::Aircraft;
 use crate::model::place::{Kind, Place};
@@ -63,6 +64,47 @@ pub fn fltplan_fields(wps: &[&Place], cruise: f64, ac: Option<&Aircraft>, ete_mi
         fuel: ac.filter(|a| a.perf.gph > 0.0).map(|a| hhmm(a.usable_fuel / a.perf.gph * 60.0)).unwrap_or_default(),
         full: ids.join(" "),
     }
+}
+
+/// FltPlan Go: a route string whose lat/long points are named FP01, FP02, ... and a KML file of
+/// those points to import as Custom Waypoints first (FltPlan Go imports custom waypoints from
+/// KML or CSV). Database points (airports, navaids, fixes) keep their ids and need no import.
+pub struct GoRoute {
+    pub route: String,
+    /// (name, lat, lon) of the points that need importing
+    pub custom: Vec<(String, f64, f64)>,
+}
+
+pub fn fltplan_go(wps: &[&Place]) -> GoRoute {
+    let mut custom = Vec::new();
+    let ids: Vec<String> = wps
+        .iter()
+        .map(|p| {
+            if p.kind == Kind::Coord {
+                let name = format!("FP{:02}", custom.len() + 1);
+                custom.push((name.clone(), p.lat, p.lon));
+                name
+            } else {
+                p.id.to_uppercase()
+            }
+        })
+        .collect();
+    GoRoute { route: ids.join(" "), custom }
+}
+
+/// KML with one Placemark per point (custom waypoints) and the route as a line.
+pub fn to_kml(points: &[(String, f64, f64)], line: &[&Place], name: &str) -> String {
+    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n<Document>\n");
+    s += &format!("  <name>{}</name>\n", esc(name));
+    for (id, lat, lon) in points {
+        s += &format!("  <Placemark><name>{}</name><description>{}</description><Point><coordinates>{lon:.6},{lat:.6},0</coordinates></Point></Placemark>\n", esc(id), esc(&coord_id(*lat, *lon)));
+    }
+    if line.len() >= 2 {
+        let coords: Vec<String> = line.iter().map(|p| format!("{:.6},{:.6},0", p.lon, p.lat)).collect();
+        s += &format!("  <Placemark><name>{}</name><LineString><tessellate>1</tessellate><coordinates>{}</coordinates></LineString></Placemark>\n", esc(name), coords.join(" "));
+    }
+    s += "</Document>\n</kml>\n";
+    s
 }
 
 fn esc(s: &str) -> String {
@@ -212,6 +254,18 @@ mod tests {
 
     fn p(kind: Kind, id: &str, lat: f64, lon: f64) -> Place {
         Place { kind, id: id.into(), name: id.into(), detail: if kind == Kind::Navaid { "VORTAC 114.1".into() } else { String::new() }, lat, lon }
+    }
+
+    #[test]
+    fn fltplan_go_names_user_points() {
+        let a = p(Kind::Airport, "KSDL", 33.62, -111.91);
+        let c = p(Kind::Coord, "3430N11230W", 34.5, -112.5);
+        let b = p(Kind::Airport, "KPRC", 34.65, -112.42);
+        let g = fltplan_go(&[&a, &c, &b]);
+        assert_eq!(g.route, "KSDL FP01 KPRC");
+        assert_eq!(g.custom.len(), 1);
+        let kml = to_kml(&g.custom, &[&a, &c, &b], "KSDL to KPRC");
+        assert!(kml.contains("<name>FP01</name>") && kml.contains("-112.500000,34.500000,0") && kml.contains("<LineString>"));
     }
 
     #[test]

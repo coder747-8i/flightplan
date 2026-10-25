@@ -316,6 +316,10 @@ impl MapView {
             if !on {
                 continue;
             }
+            // zoomed out, only the airports you'd navigate by: towered, military or 5,000 ft+
+            if z < 6.0 && !(a.twr || a.mil || a.rwy >= 5000.0) {
+                continue;
+            }
             let sz = icon_size(ic, scale);
             let r = Rect::from_center_size(pos, egui::Vec2::splat(sz * 0.7));
             let allow = public && z >= 8.0;
@@ -418,6 +422,10 @@ impl MapView {
             let nav_scale = lin(z, &[(6.0, 0.65), (10.0, 1.0)]);
             for s in &syms {
                 let Kind::Navaid { id, name, ty, freq, var } = &s.kind else { continue };
+                // VORs from zoom 6, NDBs from 8; below that they only add noise
+                if z < 6.0 || (ty.starts_with("NDB") && z < 8.0) {
+                    continue;
+                }
                 let pos = proj.world_to_screen(s.world);
                 let ic = match Icon::vor_kind(ty) {
                     Some(k) => Icon::Vor(k),
@@ -426,7 +434,9 @@ impl MapView {
                 };
                 let sz = icon_size(ic, nav_scale);
                 let r = Rect::from_center_size(pos, egui::Vec2::splat(sz * 0.7));
-                grid.place(r, true);
+                if !grid.place(r, z >= 8.0) {
+                    continue;
+                }
                 draws.push(Draw::Icon { ic, pos, size: sz, angle: 0.0 });
                 self.hits.push(Hit { rect: r.expand(3.0), sym: s.clone() });
                 if z >= 9.0 && matches!(&**ty, "VOR" | "VORTAC" | "VOR/DME") {
@@ -478,9 +488,26 @@ impl MapView {
 
         // ---- obstacles ----
         if lay.on(Group::Obstacles) && z >= 9.0 {
-            for s in &syms {
+            // tallest first, and skip any within a few px of one already drawn: wind farms
+            // otherwise print as a solid black hatch at low zoom
+            let mut obs: Vec<&Sym> = syms.iter().filter(|s| matches!(s.kind, Kind::Obstacle { .. })).collect();
+            obs.sort_by(|a, b| {
+                let h = |s: &Sym| if let Kind::Obstacle { agl, .. } = &s.kind { *agl } else { 0.0 };
+                h(b).total_cmp(&h(a))
+            });
+            let sep = if z < 11.0 { 16.0 } else if z < 12.5 { 9.0 } else { 0.0 };
+            let mut taken: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+            for s in obs {
                 let Kind::Obstacle { agl, msl, lit, .. } = &s.kind else { continue };
                 let pos = proj.world_to_screen(s.world);
+                if sep > 0.0 {
+                    let cell = ((pos.x / sep).floor() as i32, (pos.y / sep).floor() as i32);
+                    let busy = (-1..=1).any(|dx| (-1..=1).any(|dy| taken.contains(&(cell.0 + dx, cell.1 + dy))));
+                    if busy {
+                        continue;
+                    }
+                    taken.insert(cell);
+                }
                 let scale = lin(*agl as f32, &[(200.0, 0.75), (1000.0, 1.1)]);
                 let ic = Icon::Obstacle { lit: *lit };
                 let sz = ic.size() * scale;

@@ -142,6 +142,48 @@ pub fn toggle_row(ui: &mut Ui, t: &Tokens, on: &mut bool, label: &str, hint: &st
     changed
 }
 
+/// One-line switch row: swatch, label, a hint on hover, the switch on the right.
+pub fn toggle_line(ui: &mut Ui, t: &Tokens, on: &mut bool, label: &str, hint: &str, swatch: Option<Color32>) -> bool {
+    let mut changed = false;
+    let r = ui.horizontal(|ui| {
+        ui.set_min_height(26.0);
+        match swatch {
+            Some(c) => {
+                let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                ui.painter().rect_filled(r, CornerRadius::same(3), c);
+            }
+            None => {
+                ui.add_space(10.0);
+            }
+        }
+        ui.label(RichText::new(label).size(13.0));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if switch(ui, t, on).changed() {
+                changed = true;
+            }
+        });
+    });
+    if !hint.is_empty() {
+        r.response.on_hover_text(hint);
+    }
+    changed
+}
+
+/// A section header that folds its body; remembers the state by `id`.
+pub fn fold(ui: &mut Ui, t: &Tokens, id: &str, title: &str, default_open: bool, body: impl FnOnce(&mut Ui)) {
+    let key = egui::Id::new(id);
+    let mut open: bool = ui.data(|d| d.get_temp(key)).unwrap_or(default_open);
+    ui.add_space(10.0);
+    let label = format!("{}  {}", if open { ph::CARET_DOWN } else { ph::CARET_RIGHT }, title.to_uppercase());
+    if ui.add(egui::Button::new(RichText::new(label).font(theme::semibold(11.0)).color(t.text3).extra_letter_spacing(0.6)).frame(false)).clicked() {
+        open = !open;
+        ui.data_mut(|d| d.insert_temp(key, open));
+    }
+    if open {
+        body(ui);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Ok,

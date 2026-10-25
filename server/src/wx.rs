@@ -258,7 +258,7 @@ async fn open_meteo(s: &AppState, lat: f64, lon: f64) -> anyhow::Result<Value> {
         }
     }
     let url = format!(
-        "https://api.open-meteo.com/v1/gfs?latitude={lat:.3}&longitude={lon:.3}&hourly={}&wind_speed_unit=kn&forecast_days=2&timeformat=unixtime",
+        "https://api.open-meteo.com/v1/gfs?latitude={lat:.3}&longitude={lon:.3}&hourly={}&wind_speed_unit=kn&forecast_days=6&timeformat=unixtime",
         vars.join(",")
     );
     let v = s.cache.get_json(&url, Duration::from_secs(1800)).await?;

@@ -160,7 +160,9 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
     }
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, t.line);
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, t.text2);
-    v.widgets.inactive.bg_fill = t.surface_solid;
+    // bg_fill is the slider rail / checkbox well; buttons use weak_bg_fill
+    v.widgets.inactive.bg_fill = t.line_strong;
+    v.slider_trailing_fill = true;
     v.widgets.inactive.weak_bg_fill = t.surface_solid;
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.line_strong);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, t.text);

@@ -38,6 +38,8 @@ pub struct Saved {
     pub profile_open: bool,
     pub raw_wx: bool,
     pub route: Route,
+    /// personal minimums for the go / no-go call
+    pub minimums: crate::nav::verdict::Minimums,
 }
 
 impl Default for Saved {
@@ -53,6 +55,7 @@ impl Default for Saved {
             profile_open: true,
             raw_wx: false,
             route: Route::default(),
+            minimums: Default::default(),
         }
     }
 }

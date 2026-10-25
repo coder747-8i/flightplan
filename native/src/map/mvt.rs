@@ -186,7 +186,7 @@ fn value(b: &[u8]) -> Val {
     out
 }
 
-fn geometry(kind: GeomType, cmds: &[u32]) -> Vec<Vec<[f32; 2]>> {
+fn geometry(_kind: GeomType, cmds: &[u32]) -> Vec<Vec<[f32; 2]>> {
     let mut parts: Vec<Vec<[f32; 2]>> = Vec::new();
     let (mut x, mut y) = (0i32, 0i32);
     let mut i = 0;

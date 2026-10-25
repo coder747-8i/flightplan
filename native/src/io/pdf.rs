@@ -23,6 +23,7 @@ impl C {
     pub const WARN: C = C(0.83, 0.54, 0.04);
     pub const OK: C = C(0.12, 0.62, 0.42);
     pub const BLUE: C = C(0.17, 0.39, 0.72);
+    pub const WHITE: C = C(1.0, 1.0, 1.0);
     pub fn from(c: egui::Color32) -> C {
         C(c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0)
     }

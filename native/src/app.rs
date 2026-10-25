@@ -94,6 +94,7 @@ pub struct App {
     pub info: ui::info::InfoCard,
     pub settings_ui: ui::keys::KeysUi,
     pub chart: ui::chart::ChartUi,
+    pub timeline: ui::timeline::Timeline,
     pub altitude_open: bool,
     pub toast: Option<(String, Instant)>,
     pub last_proj: Option<Proj>,
@@ -165,6 +166,7 @@ impl App {
             info: Default::default(),
             settings_ui: Default::default(),
             chart: Default::default(),
+            timeline: Default::default(),
             altitude_open: false,
             toast: None,
             last_proj: None,
@@ -312,7 +314,8 @@ impl eframe::App for App {
         self.update_look();
         self.tiles.begin_frame();
         let ac = self.fleet.active().cloned();
-        self.plan.update(&self.be, &self.saved.route, ac.as_ref(), &self.wx);
+        let expired = self.data_expired();
+        self.plan.update(&self.be, &self.saved.route, ac.as_ref(), &self.wx, &self.saved.minimums, expired);
         if let Some(p) = self.last_proj {
             self.wx.update(&self.be, &self.saved.wx, p.bounds(), p.zoom);
         }

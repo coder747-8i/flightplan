@@ -252,8 +252,13 @@ fn body(app: &mut App, ui: &mut egui::Ui, b: &Briefing) {
         kpi(&mut c[4], "Fuel", format!("{:.1}", log.trip_fuel + log.taxi_fuel), "gal incl. taxi".into(), false);
         kpi(&mut c[5], "At landing", format!("{:.1}", log.fuel_at_landing), format!("gal ({:.1} reserve)", log.reserve_fuel), log.fuel_at_landing < log.reserve_fuel);
     });
-    section(ui, &t, "Hazards");
-    super::hazards::list(ui, &t, &app.plan.hazards, false);
+    section(ui, &t, "Go / no-go");
+    match app.plan.verdict.clone() {
+        Some(v) => super::verdict::card(ui, app, &v, "briefing-verdict"),
+        None => {
+            faint(ui, &t, "Still checking weather and terrain…");
+        }
+    }
     if let Some((_, tex)) = &b.image {
         ui.add_space(10.0);
         let size = tex.size_vec2();
@@ -468,25 +473,41 @@ pub fn build_pdf(app: &App, b: &Briefing) -> anyhow::Result<Vec<u8>> {
     }
     p.y = y0 + 19.0;
 
-    p.heading("Hazards");
-    if app.plan.hazards.is_empty() {
-        p.para("No hazards found for this plan. Still get an official briefing before you fly.", 9.0, false, C::OK);
-    }
-    for h in &app.plan.hazards {
-        let c = match h.level {
-            crate::nav::profile::Level::Warning => C::BAD,
-            crate::nav::profile::Level::Caution => C::WARN,
-            crate::nav::profile::Level::Info => C::BLUE,
-        };
-        p.ensure(8.0);
-        let y = p.y;
-        p.rect(MARGIN, y + 0.3, 1.0, 3.6, Some(c), None);
-        let at = h.at.map(|d| format!(" · {d:.0} NM")).unwrap_or_default();
-        p.para_at(MARGIN + 3.0, full_w - 3.0, &format!("{}{at}  ({})", h.title, h.category), 9.0, true, C::TEXT);
-        if !h.detail.is_empty() {
-            p.para_at(MARGIN + 3.0, full_w - 3.0, &h.detail, 8.5, false, C::MUTED);
+    p.heading("Go / no-go");
+    match &app.plan.verdict {
+        None => p.para("The go / no-go check hadn't finished when this was generated.", 9.0, false, C::MUTED),
+        Some(v) => {
+            let c = match v.call {
+                crate::nav::verdict::Call::Go => C::OK,
+                crate::nav::verdict::Call::Caution => C::WARN,
+                crate::nav::verdict::Call::NoGo => C::BAD,
+            };
+            p.ensure(10.0);
+            let y = p.y;
+            let word = v.call.word();
+            let bw = p.width(word, 10.0, true) + 6.0;
+            p.rect(MARGIN, y, bw, 6.0, Some(c), None);
+            p.text(MARGIN + 3.0, y + 1.0, word, 10.0, true, C::WHITE);
+            p.text(MARGIN + bw + 3.0, y + 1.2, &v.headline, 9.5, true, C::TEXT);
+            p.y = y + 8.0;
+            for f in v.problems() {
+                let fc = if f.call == crate::nav::verdict::Call::NoGo { C::BAD } else { C::WARN };
+                p.ensure(8.0);
+                let y = p.y;
+                p.rect(MARGIN, y + 0.3, 1.0, 3.6, Some(fc), None);
+                let at = f.at.filter(|d| *d > 0.5 && !f.title.contains(" NM")).map(|d| format!(" · {d:.0} NM")).unwrap_or_default();
+                p.para_at(MARGIN + 3.0, full_w - 3.0, &format!("{}{at}  ({})", f.title, f.category), 9.0, true, C::TEXT);
+                if !f.detail.is_empty() {
+                    p.para_at(MARGIN + 3.0, full_w - 3.0, &f.detail, 8.5, false, C::MUTED);
+                }
+                p.y += 1.0;
+            }
+            let checks: Vec<String> = v.checks().map(|f| if f.detail.is_empty() { f.title.clone() } else { format!("{}: {}", f.title, f.detail) }).collect();
+            if !checks.is_empty() {
+                p.para(&format!("Checked: {}.", checks.join("; ")), 8.0, false, C::MUTED);
+            }
+            p.para("Advisory only. The pilot in command makes the go / no-go decision.", 7.5, false, C::FAINT);
         }
-        p.y += 1.0;
     }
     if let Some((img, _)) = &b.image {
         // downscale the capture to at most 1800 px wide
