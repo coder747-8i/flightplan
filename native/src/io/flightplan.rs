@@ -12,6 +12,19 @@ fn route_id(p: &Place) -> String {
     if p.kind == Kind::Coord { coord_id(p.lat, p.lon) } else { p.id.to_uppercase() }
 }
 
+/// The identifier FltPlan (.com and Go) knows a point by: lower-48 airports with a three-
+/// character FAA id get the K prefix (C80 -> KC80, SDL -> KSDL); lat/longs as 3430N11230W.
+/// Alaska and Hawaii airports keep their FAA id (their ICAO prefixes are PA / PH, not K).
+pub fn fltplan_id(p: &Place) -> String {
+    let id = route_id(p);
+    let lower48 = p.lat > 24.0 && p.lat < 50.0 && p.lon > -125.5 && p.lon < -66.0;
+    if p.kind == Kind::Airport && id.len() == 3 && id.chars().all(|c| c.is_ascii_alphanumeric()) && lower48 {
+        format!("K{id}")
+    } else {
+        id
+    }
+}
+
 pub struct FltPlanFields {
     pub departure: String,
     pub destination: String,
@@ -48,7 +61,7 @@ fn hhmm(min: f64) -> String {
 
 /// The values FltPlan.com's flight plan form asks for, ready to copy.
 pub fn fltplan_fields(wps: &[&Place], cruise: f64, ac: Option<&Aircraft>, ete_min: Option<f64>) -> FltPlanFields {
-    let ids: Vec<String> = crate::model::place::compact_ids(wps, route_id);
+    let ids: Vec<String> = crate::model::place::compact_ids(wps, fltplan_id);
     let mid: &[String] = if ids.len() > 2 { &ids[1..ids.len() - 1] } else { &[] };
     // FltPlan, like the FAA form, wants altitude in hundreds of feet ("065"), FL above 17,999
     let altitude = if cruise >= 18000.0 { format!("FL{}", (cruise / 100.0).round()) } else { format!("{:03}", (cruise / 100.0).round() as i64) };
@@ -66,9 +79,8 @@ pub fn fltplan_fields(wps: &[&Place], cruise: f64, ac: Option<&Aircraft>, ete_mi
     }
 }
 
-/// FltPlan Go: a route string whose lat/long points are named FP01, FP02, ... and a KML file of
-/// those points to import as Custom Waypoints first (FltPlan Go imports custom waypoints from
-/// KML or CSV). Database points (airports, navaids, fixes) keep their ids and need no import.
+/// FltPlan Go: the route string FltPlan understands (K-prefixed airports, lat/longs as
+/// coordinates), plus the lat/long points for an optional KML of custom waypoints.
 pub struct GoRoute {
     pub route: String,
     /// (name, lat, lon) of the points that need importing
@@ -76,18 +88,9 @@ pub struct GoRoute {
 }
 
 pub fn fltplan_go(wps: &[&Place]) -> GoRoute {
-    let custom = std::cell::RefCell::new(Vec::new());
-    let ids = crate::model::place::compact_ids(wps, |p| {
-        if p.kind == Kind::Coord {
-            let mut c = custom.borrow_mut();
-            let name = format!("FP{:02}", c.len() + 1);
-            c.push((name.clone(), p.lat, p.lon));
-            name
-        } else {
-            p.id.to_uppercase()
-        }
-    });
-    GoRoute { route: ids.join(" "), custom: custom.into_inner() }
+    // lat/longs go in as coordinates (3430N11230W), which FltPlan reads directly
+    let custom: Vec<(String, f64, f64)> = wps.iter().filter(|p| p.kind == Kind::Coord).map(|p| (coord_id(p.lat, p.lon), p.lat, p.lon)).collect();
+    GoRoute { route: crate::model::place::compact_ids(wps, fltplan_id).join(" "), custom }
 }
 
 /// KML with one Placemark per point (custom waypoints) and the route as a line.
@@ -274,10 +277,15 @@ mod tests {
         let c = p(Kind::Coord, "3430N11230W", 34.5, -112.5);
         let b = p(Kind::Airport, "KPRC", 34.65, -112.42);
         let g = fltplan_go(&[&a, &c, &b]);
-        assert_eq!(g.route, "KSDL FP01 KPRC");
+        assert_eq!(g.route, "KSDL 3430N11230W KPRC");
         assert_eq!(g.custom.len(), 1);
         let kml = to_kml(&g.custom, &[&a, &c, &b], "KSDL to KPRC");
-        assert!(kml.contains("<name>FP01</name>") && kml.contains("-112.500000,34.500000,0") && kml.contains("<LineString>"));
+        assert!(kml.contains("<name>3430N11230W</name>") && kml.contains("-112.500000,34.500000,0") && kml.contains("<LineString>"));
+        // FAA ids get the K prefix, Alaska doesn't
+        let c80 = p(Kind::Airport, "C80", 41.0, -88.0);
+        let ak = p(Kind::Airport, "Z95", 61.0, -150.0);
+        let nav = p(Kind::Navaid, "PXR", 33.4, -111.97);
+        assert_eq!(fltplan_go(&[&c80, &nav, &ak]).route, "KC80 PXR Z95");
     }
 
     #[test]

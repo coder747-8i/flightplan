@@ -23,9 +23,10 @@ what the app does today.
 1. **QR code of the route string.** Point the iPad or iPhone camera at it, tap *Copy*, then in
    FltPlan Go start a new flight plan and paste the route. Save it; there's no need to file.
    This is the quickest path that involves no account automation and nothing sent to the FAA.
-2. **Custom waypoints (KML).** Lat/long points have no identifier FltPlan Go knows. The export
-   names them `FP01`, `FP02`, … in the route string and saves a KML file with those names.
-   Import it under FltPlan Go's custom waypoints first, and the route resolves.
+2. **FltPlan identifiers.** Lower-48 airports with a three-character FAA id get the K prefix
+   FltPlan expects (C80 → KC80, SDL → KSDL; Alaska and Hawaii keep their FAA id), and lat/long
+   points are written as coordinates (3430N11230W). The KML export still carries the points
+   for Google Earth or FltPlan Go custom waypoints if wanted.
 3. **FltPlan.com form fields**, each ready to copy: departure, destination, route, altitude
    (hundreds of feet, or FL), aircraft ID and type, TAS, ETE and fuel on board. Press *Save*,
    not *File*, and the plan appears in FltPlan Go.

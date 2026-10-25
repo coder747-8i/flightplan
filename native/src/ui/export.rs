@@ -80,13 +80,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) -> bool {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(format!("{}  FltPlan Go", ph::DEVICE_TABLET)).font(theme::bold(14.0)));
                     ui.add_space(2.0);
-                    let mut n = 1;
-                    if !go.custom.is_empty() {
-                        step(ui, &t, n, &format!("Import the {} user waypoint{} as Custom Waypoints (KML) so FltPlan Go knows {}.", go.custom.len(), if go.custom.len() == 1 { "" } else { "s" }, go.custom.iter().map(|c| c.0.as_str()).collect::<Vec<_>>().join(", ")));
-                        n += 1;
-                    }
-                    step(ui, &t, n, "Point your iPad or iPhone camera at the code and tap Copy.");
-                    step(ui, &t, n + 1, "In FltPlan Go, start a new flight plan and paste the route. Save it: there's no need to file.");
+                    step(ui, &t, 1, "Point your iPad or iPhone camera at the code and tap Copy.");
+                    step(ui, &t, 2, "In FltPlan Go, start a new flight plan and paste the route. Save it: there's no need to file.");
                     ui.add_space(4.0);
                     Frame::new().fill(t.surface_solid).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -100,8 +95,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) -> bool {
                             });
                         });
                     });
-                    if !go.custom.is_empty() && widgets::link(ui, &t, format!("{}  Save custom waypoints (.kml)", ph::DOWNLOAD_SIMPLE)).clicked() {
-                        action = Some("go-kml");
+                    if !go.custom.is_empty() {
+                        faint(ui, &t, "Lat/long points are written as coordinates (3430N11230W).");
                     }
                 });
             });
@@ -161,7 +156,6 @@ pub fn show(app: &mut App, ctx: &egui::Context) -> bool {
         Some("fpl") => save(app, &name, "fpl", "Garmin flight plan", to_fpl(&refs, &name)),
         Some("gpx") => save(app, &name, "gpx", "GPX route", to_gpx(&refs, &name)),
         Some("kml") => save(app, &name, "kml", "KML", to_kml(&all, &refs, &name)),
-        Some("go-kml") => save(app, &format!("{name} waypoints"), "kml", "KML custom waypoints", to_kml(&go.custom, &[], &format!("{name} waypoints"))),
         _ => {}
     }
     if modal.should_close() {
