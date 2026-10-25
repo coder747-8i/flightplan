@@ -303,7 +303,7 @@ fn body(app: &mut App, ui: &mut egui::Ui, b: &Briefing) {
             ui.end_row();
         });
     });
-    let src = if app.plan.wind_source == "windy" { "Windy GFS" } else { "Open-Meteo GFS" };
+    let src = "NWS winds-aloft forecast (FB), nearest station";
     widgets::para(ui, format!("Courses true unless marked. Variation WMM-2025 (east positive, MH = TH − E var). Winds: {src}, interpolated to altitude at each leg's ETA. Taxi {} gal not included in the leg fuel.", log.taxi_fuel), t.text3, 11.0);
 
     section(ui, &t, "Winds and temperatures aloft");

@@ -33,6 +33,8 @@ pub struct HazardInput<'a> {
     pub tfrs: &'a Value,
     pub sigmets: &'a [Value],
     pub gairmets: &'a [Value],
+    /// along-track NM of fuel stops (landings in the middle of the trip)
+    pub stop_dists: &'a [f64],
 }
 
 fn fmt_alt(v: f64) -> String {
@@ -242,9 +244,10 @@ pub fn analyze(h: &HazardInput) -> Vec<Hazard> {
     let push = |out: &mut Vec<Hazard>, level, category, title: String, detail: String, at| out.push(Hazard { level, category, title, detail, at });
 
     // ---- terrain ----
+    let near_stop = |d: f64, nm: f64| h.stop_dists.iter().any(|s| (d - s).abs() < nm);
     let worst = samples
         .iter()
-        .filter(|s| s.d >= 5.0 && s.d <= total - 5.0)
+        .filter(|s| s.d >= 5.0 && s.d <= total - 5.0 && !near_stop(s.d, 5.0))
         .map(|s| (alt_at(path, s.d) - s.max, s.d, s.max))
         .min_by(|a, b| a.0.total_cmp(&b.0));
     if let Some((clr, d, elev)) = worst {
@@ -258,7 +261,7 @@ pub fn analyze(h: &HazardInput) -> Vec<Hazard> {
     }
 
     // ---- obstacles ----
-    let tall: Vec<_> = h.profile.obstacles.iter().filter(|o| o.d > 2.0 && o.d < total - 2.0 && alt_at(path, o.d) - o.msl < 500.0).collect();
+    let tall: Vec<_> = h.profile.obstacles.iter().filter(|o| o.d > 2.0 && o.d < total - 2.0 && !near_stop(o.d, 2.0) && alt_at(path, o.d) - o.msl < 500.0).collect();
     if let Some(o) = tall.iter().max_by(|a, b| a.msl.total_cmp(&b.msl)) {
         push(
             &mut out,
@@ -302,20 +305,21 @@ pub fn analyze(h: &HazardInput) -> Vec<Hazard> {
 
     out.extend(lateral(h, total));
 
-    // ---- fuel ----
-    if log.fuel_at_landing < 0.0 {
-        push(&mut out, Level::Warning, "Fuel", "Not enough fuel for this flight".into(), format!("Trip needs {:.1} gal plus {} taxi.", log.trip_fuel, log.taxi_fuel), None);
-    } else if log.fuel_at_landing < log.reserve_fuel {
-        push(
-            &mut out,
-            Level::Warning,
-            "Fuel",
-            format!("Below reserve at landing ({:.1} gal)", log.fuel_at_landing),
-            format!("Reserve is {:.1} gal ({} min).", log.reserve_fuel, h.aircraft.map(|a| a.perf.reserve_min).unwrap_or(30.0)),
-            None,
-        );
-    } else if log.fuel_at_landing < log.reserve_fuel * 1.5 {
-        push(&mut out, Level::Caution, "Fuel", format!("Thin fuel margin: {:.1} gal at landing", log.fuel_at_landing), format!("Reserve is {:.1} gal.", log.reserve_fuel), None);
+    // ---- fuel, for each flight between fuel stops ----
+    let reserve_min = h.aircraft.map(|a| a.perf.reserve_min).unwrap_or(30.0);
+    let segs: Vec<(String, f64, f64)> = if log.segments.is_empty() { vec![(String::new(), log.fuel_at_landing, log.trip_fuel)] } else { log.segments.iter().map(|s| (s.to.clone(), s.fuel_at_landing, s.trip_fuel)).collect() };
+    let many = segs.len() > 1;
+    for (to, landing, trip) in &segs {
+        let at = if many { format!(" at {to}") } else { String::new() };
+        if *landing < 0.0 {
+            let title = if many { format!("Not enough fuel to reach {to}") } else { "Not enough fuel for this flight".into() };
+            let hint = if many { "" } else { " Add a fuel stop: tap the pump next to an airport in the route." };
+            push(&mut out, Level::Warning, "Fuel", title, format!("That leg needs {trip:.1} gal plus {} taxi.{hint}", log.taxi_fuel / segs.len() as f64), None);
+        } else if *landing < log.reserve_fuel {
+            push(&mut out, Level::Warning, "Fuel", format!("Below reserve{at} ({landing:.1} gal)"), format!("Reserve is {:.1} gal ({reserve_min} min).", log.reserve_fuel), None);
+        } else if *landing < log.reserve_fuel * 1.5 {
+            push(&mut out, Level::Caution, "Fuel", format!("Thin fuel margin{at}: {landing:.1} gal"), format!("Reserve is {:.1} gal.", log.reserve_fuel), None);
+        }
     }
     for w in &log.warnings {
         if !w.starts_with("Fuel") {
@@ -325,7 +329,9 @@ pub fn analyze(h: &HazardInput) -> Vec<Hazard> {
 
     // ---- weight & balance ----
     if let Some(ac) = h.aircraft {
-        for p in compute_wb(ac, log.trip_fuel).problems {
+        // the longest flight burns the most: the worst landing weight / CG shift
+        let burn = if log.segments.is_empty() { log.trip_fuel } else { log.segments.iter().map(|s| s.trip_fuel).fold(0.0, f64::max) };
+        for p in compute_wb(ac, burn).problems {
             push(&mut out, Level::Warning, "Weight & balance", p, String::new(), None);
         }
     }

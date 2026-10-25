@@ -28,7 +28,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
         );
         section(ui, &t, "Shortcuts");
         egui::Grid::new("keys").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
-            for (k, v) in [("/", "Search airports, navaids and fixes"), ("Enter", "Load the route typed in the Route panel"), ("Shift+Enter", "Add a search result to the route"), ("Scroll / pinch", "Zoom the chart"), ("Double-click", "Zoom in"), ("Esc", "Close dialogs and the tour")] {
+            for (k, v) in [("/", "Search airports, navaids and fixes"), ("Enter", "Load the route typed in the Route panel"), ("Shift+Enter", "Add a search result to the route"), ("Scroll / pinch", "Zoom the chart"), ("Double-click", "Zoom in"), ("R", "Measure distance and course (ruler); Esc clears it"), ("Esc", "Close dialogs and the tour")] {
                 ui.label(RichText::new(k).font(crate::theme::mono(11.5)));
                 ui.label(RichText::new(v).size(12.5));
                 ui.end_row();
@@ -44,7 +44,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
             widgets::kv(ui, &t, "Chart data", data);
         });
         ui.add_space(12.0);
-        widgets::para(ui, "For planning only. Flightplan is not a substitute for an official briefing (1800wxbrief.com), current charts, NOTAMs or the aircraft's POH. Data: FAA NASR, FAA AIS, FAA Digital Obstacle File, aviationweather.gov, OpenStreetMap / OpenFreeMap, Mapzen terrain, Overture Maps, Open-Meteo.", t.text3, 11.0);
+        widgets::para(ui, "For planning only. Flightplan is not a substitute for an official briefing (1800wxbrief.com), current charts, NOTAMs or the aircraft's POH. Data: FAA NASR, FAA AIS, FAA Digital Obstacle File, aviationweather.gov, OpenStreetMap / OpenFreeMap, Mapzen terrain, Overture Maps, NOAA (NWS, WPC, SPC), Iowa Environmental Mesonet.", t.text3, 11.0);
     });
     if tour.get() {
         app.panel = Panel::None;

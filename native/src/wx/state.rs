@@ -1,14 +1,14 @@
 //! Weather on the chart: advisories (TFR, AIRMET/SIGMET, G-AIRMET) refreshed every few
-//! minutes, METARs / PIREPs for the visible area after the view settles, and a winds-aloft
-//! grid (the native stand-in for Windy's wind map).
+//! minutes, METARs / PIREPs for the visible area after the view settles, and the NWS
+//! winds-aloft forecast (FB) at its stations.
 
 use crate::backend::{Backend, Task};
 use crate::store::WxShow;
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-/// Pressure levels offered for the winds-aloft layer: (hPa, label).
-pub const WIND_LEVELS: [(u32, &str); 8] = [(925, "2,500 ft"), (850, "5,000 ft"), (800, "6,400 ft"), (700, "10,000 ft"), (600, "14,000 ft"), (500, "FL180"), (400, "FL240"), (300, "FL300")];
+/// Levels of the NWS winds-aloft forecast offered on the chart: (ft, label).
+pub const WIND_LEVELS: [(u32, &str); 9] = [(3000, "3,000 ft"), (6000, "6,000 ft"), (9000, "9,000 ft"), (12000, "12,000 ft"), (18000, "FL180"), (24000, "FL240"), (30000, "FL300"), (34000, "FL340"), (39000, "FL390")];
 
 pub struct WindCell {
     pub lon: f64,
@@ -27,7 +27,6 @@ pub struct Wx {
     pub metars: Vec<Value>,
     pub pireps: Vec<Value>,
     pub wind_grid: Vec<Option<crate::nav::navlog::WindPoint>>,
-    pub wind_pts: Vec<[f64; 2]>,
     pub updated: Option<chrono::DateTime<chrono::Local>>,
     /// bumped when advisories change (the hazard advisor re-runs)
     pub generation: u64,
@@ -38,7 +37,7 @@ pub struct Wx {
     view_at: Option<Instant>,
     metar_task: Task<Value>,
     pirep_task: Task<Value>,
-    grid_key: String,
+    grid_at: Option<Instant>,
     grid_task: Task<Value>,
 }
 
@@ -93,27 +92,6 @@ impl Wx {
                 let b = bbox.clone();
                 self.pirep_task = be.spawn(async move { flightplan_server::wx::pireps(&st, &b, 3.0).await.unwrap_or(Value::Null) });
             }
-            if show.winds {
-                // a lattice snapped to whole steps so panning reuses cached forecasts
-                let step = if zoom >= 8.0 { 0.5 } else if zoom >= 6.5 { 1.0 } else if zoom >= 5.0 { 2.0 } else { 4.0 };
-                let mut pts = Vec::new();
-                let mut lat = (s / step).ceil() * step;
-                while lat <= n && pts.len() < 40 {
-                    let mut lon = (w / step).ceil() * step;
-                    while lon <= e && pts.len() < 40 {
-                        pts.push([lon, lat]);
-                        lon += step;
-                    }
-                    lat += step;
-                }
-                let gk = format!("{pts:?}");
-                if gk != self.grid_key && !self.grid_task.pending() {
-                    self.grid_key = gk;
-                    self.wind_pts = pts.clone();
-                    let st = be.server.clone();
-                    self.grid_task = be.spawn(async move { flightplan_server::wx::winds_at(&st, pts).await });
-                }
-            }
         } else if self.view_changed.is_some() {
             be.ctx.request_repaint_after(Duration::from_millis(420));
         }
@@ -122,6 +100,12 @@ impl Wx {
         }
         if let Some(Value::Array(p)) = self.pirep_task.poll() {
             self.pireps = p;
+        }
+        // the winds-aloft layer: every NWS FB station, refreshed every 30 minutes
+        if show.winds && self.grid_at.is_none_or(|t| t.elapsed() > Duration::from_secs(1800)) && !self.grid_task.pending() {
+            self.grid_at = Some(Instant::now());
+            let st = be.server.clone();
+            self.grid_task = be.spawn(async move { flightplan_server::wx::fb_points(&st).await });
         }
         if let Some(v) = self.grid_task.poll() {
             self.wind_grid = v["points"].as_array().map(|a| a.iter().map(|p| serde_json::from_value(p.clone()).ok()).collect()).unwrap_or_default();
@@ -141,15 +125,15 @@ impl Wx {
         self.sigmets.iter().filter(|s| s["validTimeTo"].as_i64().is_none_or(|t| t > now)).collect()
     }
 
-    /// Wind at a pressure level from the grid, at the hour nearest `when`.
-    pub fn wind_cells(&self, level_hpa: u32, when: chrono::DateTime<chrono::Utc>) -> Vec<WindCell> {
+    /// FB winds at a level (ft) for the bulletin whose "for use" window covers `when`.
+    pub fn wind_cells(&self, level_ft: u32, when: chrono::DateTime<chrono::Utc>) -> Vec<WindCell> {
         let t = when.timestamp();
         self.wind_grid
             .iter()
             .flatten()
             .filter_map(|p| {
-                let l = p.levels.iter().find(|l| l.p as u32 == level_hpa)?;
-                let best = l.times.iter().min_by_key(|x| (x.t - t).abs())?;
+                let l = p.levels.iter().find(|l| l.alt as u32 == level_ft)?;
+                let best = l.times.iter().find(|x| x.from.is_none_or(|f| t >= f) && x.to.is_none_or(|e| t < e))?;
                 Some(WindCell { lon: p.lon, lat: p.lat, dir: best.dir, spd: best.spd, temp: best.temp })
             })
             .collect()

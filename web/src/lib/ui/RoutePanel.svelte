@@ -206,7 +206,7 @@
       <button class="btn" onclick={() => (app.profileOpen = !app.profileOpen)}><AreaChart size={15} /> {app.profileOpen ? 'Hide' : 'Show'} profile</button>
       <button class="btn" onclick={() => (app.panel = 'briefing')}>Navlog & briefing</button>
     </div>
-    <p class="faint small">Winds: {plan.windSource === 'windy' ? 'Windy (GFS)' : plan.windSource === 'open-meteo' ? 'Open-Meteo GFS' : 'loading…'} · Magnetic variation: WMM-2025</p>
+    <p class="faint small">Winds: {plan.windSource === 'nws-fb' ? 'NWS winds-aloft forecast (FB)' : 'loading…'} · Magnetic variation: WMM-2025</p>
   {/if}
 </PanelShell>
 

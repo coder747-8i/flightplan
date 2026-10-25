@@ -29,7 +29,9 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
   `aircraft.rs` (perf, W&B, `compute_wb`), `place.rs`, and `plan.rs` (**derived analysis**).
   `plan.rs` covers the profile fetch, winds, navlog, hazards, the forecast fetch, the verdict
   and the 5-day `windows`.
-- `nav/`: pure logic, unit-tested. `geo`, `navlog` (wind triangle, TOC/TOD, fuel), `profile`,
+- `nav/`: pure logic, unit-tested. `geo`, `navlog` (wind triangle, TOC/TOD, fuel; splits the
+  trip at fuel stops into `segments`, each its own climb/cruise/descent, topped off, with
+  ground time; `alt_path` is the planned altitude), `profile`,
   `hazards` (terrain / airspace / TFR / advisories / fuel / W&B / night), `verdict`
   (**go / no-go**: green/yellow/red against `Minimums`), `magvar` (WMM) and `sun`.
 - `wx/`: `state.rs` (advisories, METAR / PIREP dots, wind grid), `decode.rs` (METAR / TAF /
@@ -47,7 +49,9 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
   keys), `timeline` (5-day scrubber), `verdict` (go / no-go card), `profile`, `briefing` (+
   PDF via `io/pdf.rs`), `export` (FltPlan Go QR / KML, FltPlan.com fields, .fpl / GPX / KML),
   `wizard` / `import` (aircraft), `onboarding`, `tour`, `widgets` (shared styling) and `shot`
-  (scripted screenshots).
+  (scripted screenshots). The ruler lives in `chart.rs` (`Ruler`, `draw_ruler`); its button is
+  in `shell.rs`. Fuel stops are `Waypoint::fuel_stop`, toggled from the route list or the
+  airport card.
 - `io/`: `flightplan.rs` (route formats), `aircraft_file.rs` (`.fpaircraft.json`) and
   `pdf.rs`.
 - `localbuild.rs`: runs the embedded pipeline to build a data pack locally.
@@ -74,8 +78,10 @@ hazards and `verdict::evaluate`. It also scores departures every 3 h for 5 days 
   `outlooks/natl_fcst_wx_chart` (WPC chart, layers per day), `precip/wpc_qpf` and
   `outlooks/SPC_wx_outlks`. Use `MapServer/export` for tiles (bbox in EPSG:3857) and
   `MapServer/identify` with a polyline for what the route crosses.
-- Open-Meteo: winds aloft only (`/v1/gfs`, 6 days).
-- OpenFreeMap basemap, Terrarium DEM (S3) and Windy (optional key).
+- aviationweather.gov `windtemp` (NWS FB winds aloft, text, fixed columns; 6/12/24 h bulletins
+  with "FOR USE" windows): `server/src/wx.rs` `parse_fb` / `fb_stations` / `winds_at`
+  (nearest station within 150 NM). Station ids are placed with the FAA database.
+- OpenFreeMap basemap, Terrarium DEM (S3). No Open-Meteo / Windy model data any more.
 
 ## Testing
 

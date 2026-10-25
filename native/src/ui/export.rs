@@ -48,9 +48,19 @@ fn step(ui: &mut egui::Ui, t: &Tokens, n: usize, text: &str) {
 
 pub fn show(app: &mut App, ctx: &egui::Context) -> bool {
     let t = app.t;
-    let places: Vec<crate::model::place::Place> = app.saved.route.waypoints.iter().map(|w| w.place.clone()).collect();
+    let all_places: Vec<crate::model::place::Place> = app.saved.route.waypoints.iter().map(|w| w.place.clone()).collect();
+    // with fuel stops, each flight is filed / flown as its own plan: export one leg at a time
+    let mut cuts = vec![0];
+    cuts.extend(app.saved.route.fuel_stops());
+    cuts.push(all_places.len().saturating_sub(1));
+    let legs: Vec<(usize, usize)> = cuts.windows(2).map(|c| (c[0], c[1])).collect();
+    let leg_id = egui::Id::new("export-leg");
+    let mut leg: usize = ctx.data(|d| d.get_temp(leg_id)).unwrap_or(0).min(legs.len().saturating_sub(1));
+    let (la, lb) = legs.get(leg).copied().unwrap_or((0, all_places.len().saturating_sub(1)));
+    let places: Vec<crate::model::place::Place> = all_places.get(la..=lb).map(|s| s.to_vec()).unwrap_or_default();
     let refs: Vec<&crate::model::place::Place> = places.iter().collect();
-    let f = fltplan_fields(&refs, app.saved.route.cruise, app.fleet.active(), app.plan.log.as_ref().map(|l| l.total_time));
+    let ete = app.plan.log.as_ref().map(|l| l.segments.get(leg).filter(|_| l.segments.len() == legs.len()).map(|s| (s.arrive - s.depart).num_seconds() as f64 / 60.0).unwrap_or(l.total_time));
+    let f = fltplan_fields(&refs, app.saved.route.cruise, app.fleet.active(), ete);
     let go = fltplan_go(&refs);
     let name = if f.destination.is_empty() { f.departure.clone() } else { format!("{} to {}", f.departure, f.destination) };
     let mut open = true;
@@ -68,6 +78,18 @@ pub fn show(app: &mut App, ctx: &egui::Context) -> bool {
                 }
             });
         });
+        if legs.len() > 1 {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                faint(ui, &t, format!("{}  Fuel stops: one plan per flight", ph::GAS_PUMP));
+                for (k, (a, b)) in legs.iter().enumerate() {
+                    let label = format!("{} → {}", all_places[*a].id, all_places[*b].id);
+                    if ui.selectable_label(k == leg, label).clicked() {
+                        leg = k;
+                    }
+                }
+            });
+        }
         ui.add_space(8.0);
 
         // ---- FltPlan Go ----
@@ -163,6 +185,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) -> bool {
         Some("go-kml") => save(app, &format!("{name} waypoints"), "kml", "KML custom waypoints", to_kml(&go.custom, &[], &format!("{name} waypoints"))),
         _ => {}
     }
+    ctx.data_mut(|d| d.insert_temp(leg_id, leg));
     if modal.should_close() {
         open = false;
     }

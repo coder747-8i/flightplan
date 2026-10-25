@@ -436,6 +436,8 @@ pub struct RouteForecast {
     official_task: Task<Vec<super::official::Hit>>,
     pub dep: Option<StationWx>,
     pub dest: Option<StationWx>,
+    /// fuel-stop airports, in route order
+    pub stops: Vec<StationWx>,
     /// WPC forecast chart and SPC outlook areas the route crosses, all days
     pub official: Vec<super::official::Hit>,
     pub loading: bool,
@@ -445,8 +447,10 @@ pub struct RouteForecast {
 
 impl RouteForecast {
     pub fn update(&mut self, be: &Backend, waypoints: &[Waypoint]) {
-        let ends: Vec<&Waypoint> = [waypoints.first(), waypoints.last()].into_iter().flatten().collect();
-        let key = waypoints.iter().map(|w| format!("{}{:.3}{:.3}", w.id, w.lat, w.lon)).collect::<Vec<_>>().join(" ");
+        // departure, fuel stops, destination
+        let n = waypoints.len();
+        let ends: Vec<&Waypoint> = waypoints.iter().enumerate().filter(|(i, w)| *i == 0 || *i + 1 == n || w.fuel_stop).map(|(_, w)| w).collect();
+        let key = waypoints.iter().map(|w| format!("{}{:.3}{:.3}{}", w.id, w.lat, w.lon, w.fuel_stop)).collect::<Vec<_>>().join(" ");
         let stale = self.at.is_none_or(|t| t.elapsed() > Duration::from_secs(1800));
         if (key != self.key || stale) && !self.stations_task.pending() && !self.official_task.pending() {
             self.key = key;
@@ -454,6 +458,7 @@ impl RouteForecast {
             if waypoints.len() < 2 {
                 self.dep = None;
                 self.dest = None;
+                self.stops.clear();
                 self.official.clear();
                 self.generation += 1;
                 return;
@@ -470,15 +475,7 @@ impl RouteForecast {
                         if is_apt { fetch_station(st, id, icao, lat, lon).await } else { StationWx { airport: id, ..Default::default() } }
                     }
                 };
-                let mut it = ends.into_iter();
-                match (it.next(), it.next()) {
-                    (Some(a), Some(b)) => {
-                        let (a, b) = tokio::join!(one(a), one(b));
-                        vec![a, b]
-                    }
-                    (Some(a), None) => vec![one(a).await],
-                    _ => vec![],
-                }
+                futures_join_all(ends.into_iter().map(one).collect()).await
             });
             let path: Vec<[f64; 2]> = waypoints.iter().map(|w| [w.lon, w.lat]).collect();
             let st = be.server.clone();
@@ -486,6 +483,7 @@ impl RouteForecast {
         }
         if let Some(mut list) = self.stations_task.poll() {
             self.dest = if list.len() > 1 { list.pop() } else { None };
+            self.stops = if list.len() > 1 { list.split_off(1) } else { vec![] };
             self.dep = list.pop();
             self.generation += 1;
             self.loading = self.official_task.pending();
@@ -496,6 +494,18 @@ impl RouteForecast {
             self.loading = self.stations_task.pending();
         }
     }
+}
+
+/// Run futures concurrently, results in order (tokio has no join_all of its own).
+async fn futures_join_all<T: Send + 'static>(futs: Vec<impl std::future::Future<Output = T> + Send + 'static>) -> Vec<T> {
+    let handles: Vec<_> = futs.into_iter().map(tokio::spawn).collect();
+    let mut out = Vec::new();
+    for h in handles {
+        if let Ok(v) = h.await {
+            out.push(v);
+        }
+    }
+    out
 }
 
 /// A lead-time phrase: "now", "in 3 h", "in 2 days".

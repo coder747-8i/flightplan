@@ -77,8 +77,8 @@ pub fn form(app: &mut App, ui: &mut egui::Ui) {
         widgets::para(ui, &app.settings_ui.error, t.bad, 12.0);
     }
     let k = app.be.server.settings.get();
-    let sections: [(&str, &str, &str, &'static str, Vec<(&str, &str, Option<String>)>); 3] = [
-        ("Windy winds aloft", "Winds and temperatures at altitude for the navlog, the winds-aloft layer and freezing level. Without it the app uses Open-Meteo (GFS).", "https://api.windy.com/keys", "windyPoint", vec![("windyPoint", "Point Forecast API key", k.windy_point.clone())]),
+    // winds aloft come from the NWS forecast; no key needed
+    let sections: [(&str, &str, &str, &'static str, Vec<(&str, &str, Option<String>)>); 2] = [
         ("Windy map (web app)", "Used by the browser version's Windy map. The desktop app draws winds natively, so this key only matters if you also use the web version.", "https://api.windy.com/keys", "windyMap", vec![("windyMap", "Map Forecast API key", k.windy_map.clone())]),
         ("FAA NOTAMs", "Airport, en route, FDC and TFR NOTAMs along your route in the briefing. Register a free app on the FAA API portal and copy its client ID and secret.", "https://api.faa.gov/s/", "notam", vec![("notamId", "Client ID", k.notam_id.clone()), ("notamSecret", "Client secret", k.notam_secret.clone())]),
     ];

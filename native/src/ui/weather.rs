@@ -147,7 +147,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
         }
         widgets::toggle_line(ui, &t, &mut app.saved.wx.spc, "Convective outlook (SPC)", "The Storm Prediction Center's thunderstorm outlook for the timeline's day, days 1-8", Some(egui::Color32::from_rgb(0x55, 0xbb, 0x55)));
         widgets::toggle_line(ui, &t, &mut app.saved.wx.metars, "Flight category", "METAR dots: green VFR, blue MVFR, red IFR, purple LIFR", Some(theme::flt_cat("VFR")));
-        widgets::toggle_line(ui, &t, &mut app.saved.wx.winds, "Winds aloft", "Wind barbs and temperatures at the level you pick, for the timeline's time (Windy point forecast with a key, Open-Meteo GFS otherwise)", Some(crate::ui::chart::speed_color(30.0)));
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.winds, "Winds aloft", "NWS winds-aloft forecast (FB) at its stations, at the level you pick, for the timeline's time (about 24 hours ahead)", Some(crate::ui::chart::speed_color(30.0)));
         if app.saved.wx.winds {
             ui.horizontal(|ui| {
                 ui.add_space(18.0);
@@ -224,7 +224,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
                 let _ = open::that("https://www.1800wxbrief.com/");
             }
         });
-        widgets::para(ui, "Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet (NEXRAD, HRRR, NBM), NOAA WPC and SPC, Open-Meteo / Windy (winds aloft). Get an official briefing before flight.", t.text3, 10.5);
+        widgets::para(ui, "Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet (NEXRAD, HRRR, NBM), NOAA WPC and SPC, NWS winds aloft (FB). Get an official briefing before flight.", t.text3, 10.5);
     });
     if close {
         app.panel = Panel::None;

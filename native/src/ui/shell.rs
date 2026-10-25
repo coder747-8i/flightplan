@@ -12,6 +12,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     rail(app, ctx);
     super::search::show(app, ctx);
     altitude(app, ctx);
+    ruler_button(app, ctx);
     banner(app, ctx);
     match app.panel {
         Panel::Route => super::route::panel(app, ctx),
@@ -161,6 +162,26 @@ fn altitude(app: &mut App, ctx: &egui::Context) {
         });
     });
     let _ = screen;
+}
+
+/// The measuring tool's switch, under the altitude filter.
+fn ruler_button(app: &mut App, ctx: &egui::Context) {
+    let t = app.t;
+    let on = app.chart.ruler.on;
+    let y = if app.altitude_open { 360.0 } else { 58.0 };
+    egui::Area::new("ruler-btn".into()).anchor(Align2::RIGHT_TOP, vec2(-12.0, y)).order(egui::Order::Middle).show(ctx, |ui| {
+        let pill = glass(&t).fill(if on { t.accent } else { t.surface_solid }).corner_radius(CornerRadius::same(99)).inner_margin(Margin::symmetric(12, 7)).show(ui, |ui| {
+            let label = if on { format!("{}  Measuring · Esc to stop", ph::RULER) } else { format!("{}  Measure", ph::RULER) };
+            ui.add(egui::Label::new(RichText::new(label).font(theme::semibold(12.5)).color(if on { Color32::WHITE } else { t.text2 })).wrap_mode(egui::TextWrapMode::Extend));
+        });
+        let r = pill.response.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Measure distance and course (R). Click a start and an end; points snap to airports and navaids.");
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Measure"));
+        mark(ctx, "ruler", r.rect);
+        if r.clicked() {
+            app.chart.ruler = Default::default();
+            app.chart.ruler.on = !on;
+        }
+    });
 }
 
 /// Vertical two-handle slider, SFC to FL180.

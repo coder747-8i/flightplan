@@ -22,7 +22,7 @@ cargo build --release            # binary at native/target/release/flightplan
 ```
 
 On first launch a setup screen walks through the app, installs the chart data, offers the
-optional Windy / FAA NOTAM keys, and sets up your aircraft. Help (bottom left) brings it and a
+optional FAA NOTAM key, and sets up your aircraft. Help (bottom left) brings it and a
 tour of the screen back later. Data lives in the per-user data folder
 (`~/.local/share/flightplan`, `~/Library/Application Support/io.github.coder747-8i.Flightplan`,
 `%APPDATA%\coder747-8i\Flightplan\data`); `FP_DATA_DIR` overrides it.
@@ -44,6 +44,14 @@ What it does beyond the chart and route:
   weight & balance and night. The timeline is coloured with the call for departures every 3
   hours, so the green stretches are your windows. The call is advice only: the pilot in command
   decides.
+- **Fuel stops.** Hover an airport in the middle of the route and tap the pump (or use the
+  airport card) to land there and top off. Each flight between stops gets its own climb,
+  descent and fuel check, with a ground time you set (45 minutes by default), and the stop's
+  weather is checked for when you'd land there. Export gives one plan per flight.
+- **Ruler.** The Measure button (or R) measures distance in NM, statute miles and km, with
+  true / magnetic course and time at your cruise speed. Ends snap to airports and navaids.
+- **Winds aloft** come from the NWS winds-aloft forecast (FB) of the nearest station, about 24
+  hours ahead. Past that the navlog plans with no wind and says so.
 - **Briefing** page and PDF lead with the call, then the navlog, weather and chart.
 
 ## Chart data pack
@@ -99,11 +107,11 @@ There are two ways to make a pack:
 - Iowa Environmental Mesonet: NEXRAD radar, HRRR forecast reflectivity, NBM text guidance
 - NOAA map services (mapservices.weather.noaa.gov): WPC National Forecast Chart and
   precipitation forecasts, SPC convective outlooks
-- Open-Meteo (GFS) or Windy: winds aloft for the navlog
+- NWS winds-aloft forecast (FB, aviationweather.gov): winds and temperatures aloft for the
+  navlog and the winds layer, about 24 hours ahead
 - Terrain from Mapzen/AWS Terrarium; basemap from OpenFreeMap (OpenStreetMap)
 - FBOs from Overture Maps places plus FAA airport remarks
-- Optional: Windy (map and point forecast) and the FAA NOTAM API, configured in the app's
-  Settings panel
+- Optional: the FAA NOTAM API (and a Windy map key for the web app), configured in Settings
 
 ## Build the data
 

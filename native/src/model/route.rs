@@ -11,6 +11,9 @@ pub struct Route {
     /// local departure time "YYYY-MM-DDTHH:MM"; empty = now
     #[serde(default)]
     pub departure: String,
+    /// minutes on the ground at each fuel stop
+    #[serde(default = "default_stop_minutes")]
+    pub stop_minutes: f64,
     /// clicking the map adds waypoints
     #[serde(skip)]
     pub editing: bool,
@@ -24,9 +27,13 @@ fn first_rev() -> u64 {
     1
 }
 
+fn default_stop_minutes() -> f64 {
+    45.0
+}
+
 impl Default for Route {
     fn default() -> Self {
-        Route { waypoints: vec![], cruise: 6500.0, departure: String::new(), editing: false, rev: 1 }
+        Route { waypoints: vec![], cruise: 6500.0, departure: String::new(), stop_minutes: default_stop_minutes(), editing: false, rev: 1 }
     }
 }
 
@@ -36,7 +43,7 @@ impl Route {
     }
 
     pub fn add(&mut self, p: Place, at: Option<usize>) {
-        let wp = Waypoint { place: p, uid: new_uid() };
+        let wp = Waypoint { place: p, uid: new_uid(), fuel_stop: false };
         match at {
             Some(i) if i < self.waypoints.len() => self.waypoints.insert(i, wp),
             _ => self.waypoints.push(wp),
@@ -65,8 +72,25 @@ impl Route {
     }
 
     pub fn replace(&mut self, list: Vec<Place>) {
-        self.waypoints = list.into_iter().map(|p| Waypoint { place: p, uid: new_uid() }).collect();
+        self.waypoints = list.into_iter().map(|p| Waypoint { place: p, uid: new_uid(), fuel_stop: false }).collect();
         self.changed();
+    }
+
+    /// Make an intermediate airport a fuel stop, or not. Doesn't change the geometry, so `rev`
+    /// stays (the plan hashes the stops itself).
+    pub fn toggle_fuel_stop(&mut self, i: usize) {
+        let n = self.waypoints.len();
+        if let Some(w) = self.waypoints.get_mut(i) {
+            if i > 0 && i + 1 < n && w.kind == super::place::Kind::Airport {
+                w.fuel_stop = !w.fuel_stop;
+            }
+        }
+    }
+
+    /// Waypoint indices of the fuel stops.
+    pub fn fuel_stops(&self) -> Vec<usize> {
+        let n = self.waypoints.len();
+        self.waypoints.iter().enumerate().filter(|(i, w)| w.fuel_stop && *i > 0 && *i + 1 < n).map(|(i, _)| i).collect()
     }
 
     pub fn reverse(&mut self) {

@@ -37,6 +37,16 @@ pub struct ChartUi {
     pub radar_frame: Option<crate::wx::radar::Frame>,
     /// tiles of the current frame still loading
     pub radar_loading: bool,
+    pub ruler: Ruler,
+}
+
+/// The measuring tool: click a start, click an end; the line follows the pointer in between.
+#[derive(Default)]
+pub struct Ruler {
+    pub on: bool,
+    /// (lat, lon, label) of the start and end
+    a: Option<(f64, f64, String)>,
+    b: Option<(f64, f64, String)>,
 }
 
 enum RadarTile {
@@ -171,7 +181,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let proj0 = app.map.proj(rect);
 
     // ---- route drag start: a waypoint (move) or the line (insert) ----
-    if resp.drag_started_by(egui::PointerButton::Primary) {
+    if resp.drag_started_by(egui::PointerButton::Primary) && !app.chart.ruler.on {
         let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or_default();
         let w = &app.saved.route.waypoints;
         let node = w.iter().position(|p| proj0.to_screen(p.lon, p.lat).distance(origin) < 11.0);
@@ -268,9 +278,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
     } else if resp.clicked() {
         if let Some(p) = resp.interact_pointer_pos() {
-            click(app, &proj, p);
+            if app.chart.ruler.on {
+                ruler_click(app, &proj, p);
+            } else {
+                click(app, &proj, p);
+            }
         }
     }
+    ruler_keys(app, ui);
+    draw_ruler(app, ui, &painter, &proj, hover);
 
     // ---- coordinates ----
     if app.capturing {
@@ -595,10 +611,10 @@ fn draw_winds(app: &App, ui: &egui::Ui, painter: &Painter, proj: &Proj) {
     if !app.saved.wx.winds {
         return;
     }
-    let (hpa, _) = WIND_LEVELS[app.saved.wind_level.min(WIND_LEVELS.len() - 1)];
+    let (level_ft, _) = WIND_LEVELS[app.saved.wind_level.min(WIND_LEVELS.len() - 1)];
     let ink = if app.night() { Color32::from_rgb(220, 226, 234) } else { Color32::from_rgb(30, 36, 46) };
     let halo = app.palette.label_halo.egui();
-    for c in app.wx.wind_cells(hpa, app.saved.route.departure_time()) {
+    for c in app.wx.wind_cells(level_ft, app.saved.route.departure_time()) {
         let p = proj.to_screen(c.lon, c.lat);
         if !proj.rect.contains(p) {
             continue;
@@ -707,7 +723,8 @@ fn draw_route(app: &App, ui: &egui::Ui, painter: &Painter, proj: &Proj) {
     for p in w.iter() {
         let s = proj.to_screen(p.lon, p.lat);
         painter.circle(s, 7.0, rc, Stroke::new(2.5, Color32::WHITE));
-        let g = ui.fonts_mut(|f| f.layout_job(single(&p.id, fonts.bold(12.0), Color32::WHITE)));
+        let label = if p.fuel_stop { format!("{} {}", p.id, egui_phosphor::regular::GAS_PUMP) } else { p.id.clone() };
+        let g = ui.fonts_mut(|f| f.layout_job(single(&label, fonts.bold(12.0), Color32::WHITE)));
         halo_text(painter, s + vec2(11.0, -g.size().y / 2.0), g, rc, 2.2, 0.0);
     }
     // hover marker shared with the profile
@@ -771,6 +788,83 @@ fn draw_dots(app: &App, ui: &egui::Ui, painter: &Painter, proj: &Proj) {
             }
         }
     }
+}
+
+/// R toggles the ruler, Esc clears it (when nobody is typing).
+fn ruler_keys(app: &mut App, ui: &egui::Ui) {
+    if ui.ctx().egui_wants_keyboard_input() {
+        return;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::R) && !i.modifiers.any()) {
+        app.chart.ruler.on = !app.chart.ruler.on;
+        app.chart.ruler.a = None;
+        app.chart.ruler.b = None;
+    }
+    if app.chart.ruler.on && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if app.chart.ruler.a.is_some() {
+            app.chart.ruler.a = None;
+            app.chart.ruler.b = None;
+        } else {
+            app.chart.ruler.on = false;
+        }
+    }
+}
+
+fn ruler_click(app: &mut App, proj: &Proj, p: Pos2) {
+    let place = snap(app, proj, p);
+    let label = if place.kind == Kind::Coord { String::new() } else { place.id.clone() };
+    let pt = (place.lat, place.lon, label);
+    let r = &mut app.chart.ruler;
+    if r.a.is_none() || r.b.is_some() {
+        r.a = Some(pt);
+        r.b = None;
+    } else {
+        r.b = Some(pt);
+    }
+}
+
+/// The ruler's line, end points and readout: NM / statute miles / km, true and magnetic
+/// course, and the time at the aircraft's cruise speed.
+fn draw_ruler(app: &App, ui: &egui::Ui, painter: &Painter, proj: &Proj, hover: Option<Pos2>) {
+    let r = &app.chart.ruler;
+    if !r.on {
+        return;
+    }
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    let Some((alat, alon, alabel)) = r.a.clone() else { return };
+    let (blat, blon, blabel) = match (&r.b, hover) {
+        (Some(b), _) => b.clone(),
+        (None, Some(h)) => {
+            let (lon, lat) = proj.from_screen(h);
+            (lat, lon, String::new())
+        }
+        _ => return,
+    };
+    let pa = proj.to_screen(alon, alat);
+    let pb = proj.to_screen(blon, blat);
+    let ink = if app.night() { Color32::from_rgb(240, 240, 240) } else { Color32::from_rgb(25, 28, 34) };
+    painter.line_segment([pa, pb], Stroke::new(5.0, Color32::WHITE.gamma_multiply(0.9)));
+    painter.extend(Shape::dashed_line(&[pa, pb], Stroke::new(2.5, ink), 10.0, 6.0));
+    for p in [pa, pb] {
+        painter.circle(p, 5.0, Color32::WHITE, Stroke::new(2.5, ink));
+    }
+    let nm = distance_nm(alat, alon, blat, blon);
+    let tc = bearing(alat, alon, blat, blon);
+    let mc = tc - variation_now(alat, alon);
+    let mut text = format!("{nm:.1} NM · {:.1} mi · {:.1} km\n{}°T · {}°M", nm * 1.150779, nm * 1.852, deg(tc), deg(mc));
+    if let Some(ac) = app.fleet.active().filter(|a| a.perf.tas > 0.0) {
+        text += &format!(" · {} at {} kt", crate::nav::navlog::fmt_time(nm / ac.perf.tas * 60.0), ac.perf.tas.round());
+    }
+    if !alabel.is_empty() || !blabel.is_empty() {
+        let name = |s: &str| if s.is_empty() { "point".to_string() } else { s.to_string() };
+        text = format!("{} → {}\n{text}", name(&alabel), name(&blabel));
+    }
+    let galley = ui.fonts_mut(|f| f.layout_job(single(&text, crate::theme::semibold(12.0), ink)));
+    let mid = pa + (pb - pa) * 0.5;
+    let rect = Rect::from_min_size(mid + vec2(12.0, -galley.size().y - 12.0), galley.size() + vec2(16.0, 10.0));
+    painter.rect_filled(rect, 8.0, if app.night() { Color32::from_rgb(30, 34, 40) } else { Color32::WHITE });
+    painter.rect_stroke(rect, 8.0, Stroke::new(1.0, ink.gamma_multiply(0.3)), egui::StrokeKind::Inside);
+    painter.galley(rect.min + vec2(8.0, 5.0), galley, ink);
 }
 
 fn draw_scale(app: &App, painter: &Painter, proj: &Proj) {

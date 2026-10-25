@@ -35,6 +35,11 @@ pub struct WindTime {
     pub temp: Option<f64>,
     #[serde(default)]
     pub alt: Option<f64>,
+    /// the forecast's "for use" window (NWS FB); outside it the forecast doesn't apply
+    #[serde(default)]
+    pub from: Option<i64>,
+    #[serde(default)]
+    pub to: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,6 +94,22 @@ pub struct NavRow {
     pub lon: f64,
 }
 
+/// One flight between fuel stops (or the whole trip when there are none).
+#[derive(Clone, Debug)]
+pub struct Segment {
+    /// waypoint index where it ends
+    pub to_index: usize,
+    pub to: String,
+    pub depart: DateTime<Utc>,
+    pub arrive: DateTime<Utc>,
+    /// along-track NM where it starts and ends
+    pub start_d: f64,
+    pub end_d: f64,
+    pub trip_fuel: f64,
+    pub fuel_at_start: f64,
+    pub fuel_at_landing: f64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct NavLog {
     pub rows: Vec<NavRow>,
@@ -101,6 +122,12 @@ pub struct NavLog {
     pub toc_dist: Option<f64>,
     pub tod_dist: Option<f64>,
     pub warnings: Vec<String>,
+    /// flights between fuel stops, in order
+    pub segments: Vec<Segment>,
+    /// planned altitude along the route: [along-track NM, ft MSL]
+    pub alt_path: Vec<[f64; 2]>,
+    /// minutes on the ground at fuel stops (included in total_time)
+    pub ground_time: f64,
 }
 
 pub fn norm(d: f64) -> f64 {
@@ -118,7 +145,7 @@ pub fn wind_at(wp: Option<&WindPoint>, alt_ft: f64, when: DateTime<Utc>) -> Opti
         .levels
         .iter()
         .filter_map(|l| {
-            let best = l.times.iter().min_by_key(|x| (x.t - t).abs())?;
+            let best = l.times.iter().filter(|x| x.from.is_none_or(|f| t >= f) && x.to.is_none_or(|e| t < e)).min_by_key(|x| (x.t - t).abs())?;
             Some((best.alt.unwrap_or(l.alt), Wind { dir: best.dir, spd: best.spd, temp: best.temp }))
         })
         .collect();
@@ -174,11 +201,90 @@ pub struct NavInput<'a> {
     pub dest_elev: f64,
     /// winds per waypoint index
     pub winds: &'a [Option<WindPoint>],
+    /// fuel stops: (waypoint index, field elevation ft); the airplane is topped off there
+    pub stops: &'a [(usize, f64)],
+    /// minutes on the ground at each fuel stop
+    pub ground_min: f64,
 }
 
-/// Builds the log. Climb starts at the departure field, descent ends 1,000 ft above the
-/// destination; both are spread over legs as needed (TOC/TOD may fall mid-leg).
+/// Builds the log for the whole trip. Each stretch between fuel stops is its own flight: climb
+/// out, cruise, descend, land, top off to full usable fuel, wait the ground time, go again.
 pub fn build(inp: &NavInput) -> NavLog {
+    let w = inp.waypoints;
+    let ac = inp.aircraft;
+    let mut cuts: Vec<usize> = vec![0];
+    let mut stops: Vec<(usize, f64)> = inp.stops.iter().copied().filter(|(i, _)| *i > 0 && *i + 1 < w.len()).collect();
+    stops.sort_by_key(|s| s.0);
+    stops.dedup_by_key(|s| s.0);
+    cuts.extend(stops.iter().map(|s| s.0));
+    cuts.push(w.len().saturating_sub(1));
+    if w.len() < 2 {
+        return build_segment(inp, None);
+    }
+    let fuel_station = ac.wb.stations.iter().find(|s| s.kind == crate::model::aircraft::StationKind::Fuel);
+    let full = fuel_station.and_then(|s| s.max).unwrap_or(ac.usable_fuel).min(ac.usable_fuel.max(1.0));
+    let mut out = NavLog { reserve_fuel: ac.perf.gph * ac.perf.reserve_min / 60.0, ..Default::default() };
+    let mut when = inp.departure;
+    let (mut d_off, mut t_off) = (0.0, 0.0);
+    let n = cuts.len() - 1;
+    for k in 0..n {
+        let (a, b) = (cuts[k], cuts[k + 1]);
+        let elev = |i: usize, fallback: f64| stops.iter().find(|s| s.0 == i).map(|s| s.1).unwrap_or(fallback);
+        let seg_inp = NavInput {
+            waypoints: &w[a..=b],
+            aircraft: ac,
+            cruise: inp.cruise,
+            departure: when,
+            dep_elev: if k == 0 { inp.dep_elev } else { elev(a, inp.dep_elev) },
+            dest_elev: if k + 1 == n { inp.dest_elev } else { elev(b, inp.dest_elev) },
+            winds: inp.winds.get(a..=b.min(inp.winds.len().saturating_sub(1))).unwrap_or(&[]),
+            stops: &[],
+            ground_min: 0.0,
+        };
+        let seg = build_segment(&seg_inp, if k == 0 { None } else { Some(full) });
+        for mut r in seg.rows {
+            r.cum_dist += d_off;
+            r.cum_time += t_off;
+            out.rows.push(r);
+        }
+        for p in &seg.alt_path {
+            out.alt_path.push([p[0] + d_off, p[1]]);
+        }
+        if k == 0 {
+            out.toc_dist = seg.toc_dist;
+        }
+        if k + 1 == n {
+            out.tod_dist = seg.tod_dist.map(|d| d + d_off);
+        }
+        let arrive = when + Duration::milliseconds((seg.total_time * 60_000.0) as i64);
+        let start_fuel = seg.fuel_at_landing + seg.trip_fuel;
+        out.segments.push(Segment { to_index: b, to: w[b].id.clone(), depart: when, arrive, start_d: d_off, end_d: d_off + seg.total_dist, trip_fuel: seg.trip_fuel, fuel_at_start: start_fuel, fuel_at_landing: seg.fuel_at_landing });
+        for wn in seg.warnings {
+            let wn = if n > 1 && wn.starts_with("Fuel at landing") { format!("{wn} at {}", w[b].id) } else { wn };
+            if !out.warnings.contains(&wn) {
+                out.warnings.push(wn);
+            }
+        }
+        out.total_dist += seg.total_dist;
+        out.trip_fuel += seg.trip_fuel;
+        out.taxi_fuel += seg.taxi_fuel;
+        out.fuel_at_landing = seg.fuel_at_landing;
+        d_off += seg.total_dist;
+        t_off += seg.total_time;
+        when = arrive;
+        if k + 1 < n {
+            t_off += inp.ground_min;
+            out.ground_time += inp.ground_min;
+            when += Duration::milliseconds((inp.ground_min * 60_000.0) as i64);
+        }
+    }
+    out.total_time = t_off;
+    out
+}
+
+/// One flight from the first to the last of `inp.waypoints`. `start_fuel` is the fuel on
+/// board at engine start (None: the aircraft's loading).
+fn build_segment(inp: &NavInput, start_fuel: Option<f64>) -> NavLog {
     let w = inp.waypoints;
     let ac = inp.aircraft;
     let p = &ac.perf;
@@ -211,7 +317,7 @@ pub fn build(inp: &NavInput) -> NavLog {
     let tod_d = total - tod_from_end;
 
     let fuel_station = ac.wb.stations.iter().find(|s| s.kind == crate::model::aircraft::StationKind::Fuel);
-    let loaded = fuel_station.and_then(|s| ac.load.get(&s.id).copied()).unwrap_or(ac.usable_fuel);
+    let loaded = start_fuel.unwrap_or_else(|| fuel_station.and_then(|s| ac.load.get(&s.id).copied()).unwrap_or(ac.usable_fuel));
     let fuel_start = loaded - p.taxi_gal;
     let mut rows: Vec<NavRow> = Vec::new();
     let mut cum_d = 0.0;
@@ -329,6 +435,9 @@ pub fn build(inp: &NavInput) -> NavLog {
         toc_dist: (climb_ft > 0.0).then_some(toc_d),
         tod_dist: (desc_ft > 0.0).then_some(tod_d),
         warnings,
+        segments: vec![],
+        alt_path: vec![[0.0, inp.dep_elev], [toc_d, cruise.max(inp.dep_elev)], [tod_d, cruise.max(inp.dep_elev)], [total, inp.dest_elev + 1000.0]],
+        ground_time: 0.0,
     }
 }
 
@@ -370,14 +479,33 @@ mod tests {
     use crate::model::{aircraft, place::Place};
 
     fn wp(id: &str, lat: f64, lon: f64) -> Waypoint {
-        Waypoint { place: Place { kind: crate::model::place::Kind::Airport, id: id.into(), name: id.into(), detail: String::new(), lat, lon }, uid: 0 }
+        Waypoint { place: Place { kind: crate::model::place::Kind::Airport, id: id.into(), name: id.into(), detail: String::new(), lat, lon }, uid: 0, fuel_stop: false }
+    }
+
+    #[test]
+    fn fuel_stop_tops_off_and_waits() {
+        let ac = aircraft::from_preset(aircraft::presets()[0].clone(), "N1");
+        // ~690 NM: too far on one tank for a 172, fine with a stop in the middle
+        let w = vec![wp("KSDL", 33.62, -111.91), wp("KABQ", 35.04, -106.61), wp("KAMA", 35.22, -101.71)];
+        let t0 = Utc::now();
+        let one = build(&NavInput { waypoints: &w, aircraft: &ac, cruise: 9500.0, departure: t0, dep_elev: 1510.0, dest_elev: 3607.0, winds: &[], stops: &[], ground_min: 45.0 });
+        let two = build(&NavInput { waypoints: &w, aircraft: &ac, cruise: 9500.0, departure: t0, dep_elev: 1510.0, dest_elev: 3607.0, winds: &[], stops: &[(1, 5355.0)], ground_min: 45.0 });
+        assert_eq!(one.segments.len(), 1);
+        assert_eq!(two.segments.len(), 2);
+        assert!(two.fuel_at_landing > one.fuel_at_landing + 20.0, "topped off at KABQ: {} vs {}", two.fuel_at_landing, one.fuel_at_landing);
+        assert!((two.ground_time - 45.0).abs() < 0.01);
+        assert!(two.total_time > one.total_time + 40.0, "ground time and a second climb");
+        assert!(two.segments[1].depart >= two.segments[0].arrive + Duration::minutes(45));
+        // the planned altitude comes down to the stop and climbs again
+        let at_stop = two.alt_path.iter().filter(|p| (p[0] - two.segments[0].end_d).abs() < 0.01).map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        assert!(at_stop < 9500.0);
     }
 
     #[test]
     fn simple_leg() {
         let ac = aircraft::from_preset(aircraft::presets()[0].clone(), "N1");
         let w = vec![wp("KSDL", 33.6229, -111.9105), wp("KPRC", 34.6548, -112.4192)];
-        let log = build(&NavInput { waypoints: &w, aircraft: &ac, cruise: 7500.0, departure: Utc::now(), dep_elev: 1510.0, dest_elev: 5045.0, winds: &[] });
+        let log = build(&NavInput { waypoints: &w, aircraft: &ac, cruise: 7500.0, departure: Utc::now(), dep_elev: 1510.0, dest_elev: 5045.0, winds: &[], stops: &[], ground_min: 0.0 });
         assert!((log.total_dist - 66.0).abs() < 3.0, "{}", log.total_dist);
         assert!(log.rows.iter().any(|r| r.phase == Phase::Climb));
         assert!(log.trip_fuel > 4.0 && log.trip_fuel < 10.0);

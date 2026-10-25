@@ -32,6 +32,7 @@ flightplan-context `add_note` tool; keep each note short and specific.
 - IEM HRRR extended-run tiles (hrrr::REFD-F1140..2880) often 503 past ~38 h even though refd_{min}.json exists; radar.rs Runs probes the last served hour by binary search on tile 4/3/5. (2026-10-24)
 - G-AIRMET/SIGMET from aviationweather.gov are only valid for hours: filter by the ETA at the crossing point (hazards.rs lateral) or a departure days out gets flagged by today's advisories. (2026-10-24)
 - FAA TFR shapes have no machine-readable times, but titles carry dates ("Friday, October 23, 2026 through Sunday, October 25, 2026 Local"). hazards::tfr_days parses them (12 h slack for zones); undated or old single-date titles count as always active. (2026-10-24)
+- Winds aloft are the NWS FB forecast only (owner rule: official products). FB columns are fixed: each level field ends where its header label ends; 3000 ft has no temp; dd>36 means 100 kt+ (dd-50, ff+100); 9900 = light and variable; temps above 24,000 ft are negative without a sign. Only ~24 h ahead: past that the navlog has no wind and the verdict says so. (2026-10-24)
 
 ## Plan
 - Route.rev is serde(skip) and must deserialize to 1, not 0: Plan treats fetched_rev 0 as already fetched, so a route restored at startup never loaded its profile. The verdict waits for profile_rev == route.rev and a non-empty profile, so it never says GO without terrain. (2026-10-24)

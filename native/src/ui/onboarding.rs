@@ -27,7 +27,7 @@ impl Onboarding {
     }
 }
 
-const STEPS: [&str; 6] = ["Welcome", "How it works", "Chart data", "Weather keys", "Your aircraft", "Finish"];
+const STEPS: [&str; 6] = ["Welcome", "How it works", "Chart data", "NOTAM key", "Your aircraft", "Finish"];
 
 struct Slide {
     icon: &'static str,
@@ -163,7 +163,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     ui.add_space(12.0);
                     widgets::muted(ui, &t, "Setup takes a couple of minutes:");
                     ui.add_space(6.0);
-                    for (icon, text) in [(ph::STACK, "A quick look at how the app works"), (ph::MAP_TRIFOLD, "Download the FAA chart data"), (ph::CLOUD_SUN, "Optionally add Windy and FAA NOTAM keys"), (ph::AIRPLANE_TILT, "Set up your aircraft")] {
+                    for (icon, text) in [(ph::STACK, "A quick look at how the app works"), (ph::MAP_TRIFOLD, "Download the FAA chart data"), (ph::CLOUD_SUN, "Optionally add an FAA NOTAM key"), (ph::AIRPLANE_TILT, "Set up your aircraft")] {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(icon).size(16.0).color(t.accent));
                             ui.label(RichText::new(text).size(14.0));

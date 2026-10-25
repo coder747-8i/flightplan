@@ -317,7 +317,14 @@ pub fn evaluate(i: &Input) -> Verdict {
             }
         }
         if !out.iter().any(|x| x.category == "Fuel") {
-            out.push(f(Call::Go, "Fuel", format!("{:.1} gal at landing", log.fuel_at_landing), format!("Reserve {:.1} gal.", log.reserve_fuel), None));
+            let stops = log.segments.len().saturating_sub(1);
+            let detail = if stops > 0 { format!("Reserve {:.1} gal; topped off at {stops} fuel stop{}.", log.reserve_fuel, if stops == 1 { "" } else { "s" }) } else { format!("Reserve {:.1} gal.", log.reserve_fuel) };
+            out.push(f(Call::Go, "Fuel", format!("{:.1} gal at landing", log.fuel_at_landing), detail, None));
+        }
+        // official winds aloft only reach about 24 hours out
+        let cruise_rows: Vec<_> = log.rows.iter().filter(|r| r.phase == super::navlog::Phase::Cruise).collect();
+        if !cruise_rows.is_empty() && cruise_rows.iter().all(|r| r.wind.is_none()) {
+            out.push(f(Call::Go, "Winds aloft", "No official winds-aloft forecast for this time", "The NWS winds-aloft forecast covers about the next 24 hours: times and fuel assume no wind. Check winds again closer to departure.", None));
         }
     }
     if i.data_expired {

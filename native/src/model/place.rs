@@ -54,6 +54,9 @@ pub struct Waypoint {
     #[serde(flatten)]
     pub place: Place,
     pub uid: u64,
+    /// land here and top off before going on (airports in the middle of the route)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fuel_stop: bool,
 }
 
 impl std::ops::Deref for Waypoint {

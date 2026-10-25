@@ -22,8 +22,10 @@ use std::time::{Duration, Instant};
 pub struct EndInfo {
     pub dep_elev: Option<f64>,
     pub dest_elev: Option<f64>,
-    /// (runway end id, true heading) by airport id
+    /// (runway end id, true heading) by airport id, for every airport on the route
     pub runways: HashMap<String, Vec<(String, f64)>>,
+    /// field elevation by airport id
+    pub elevs: HashMap<String, f64>,
 }
 
 #[derive(Default)]
@@ -73,11 +75,12 @@ async fn fetch_profile(be: std::sync::Arc<flightplan_server::AppState>, path: Ve
         let Ok(data) = be.try_data() else { break };
         let Ok(Some(a)) = data.db.airport(&id) else { continue };
         if let Some(e) = a["elev"].as_f64() {
-            if i == 0 {
-                info.dep_elev = Some(e);
-            } else {
-                info.dest_elev = Some(e);
+            match i {
+                0 => info.dep_elev = Some(e),
+                1 => info.dest_elev = Some(e),
+                _ => {}
             }
+            info.elevs.insert(id.clone(), e);
         }
         let mut rw = Vec::new();
         for r in a["runways"].as_array().into_iter().flatten() {
@@ -119,13 +122,16 @@ impl Plan {
                 self.fetched_rev = route.rev;
                 self.changed_at = None;
                 let path = route.path();
-                let mut ends = Vec::new();
-                if let Some(w) = route.waypoints.first().filter(|w| w.kind == Kind::Airport) {
-                    ends.push((0, w.id.clone()));
-                }
-                if let Some(w) = route.waypoints.last().filter(|w| w.kind == Kind::Airport) {
-                    ends.push((1, w.id.clone()));
-                }
+                // every airport: departure / destination elevations, plus runways and field
+                // elevations for crosswind and fuel stops (0 = first, 1 = last, 2 = in between)
+                let n = route.waypoints.len();
+                let ends: Vec<(usize, String)> = route
+                    .waypoints
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, w)| w.kind == Kind::Airport)
+                    .map(|(i, w)| (if i == 0 { 0 } else if i + 1 == n { 1 } else { 2 }, w.id.clone()))
+                    .collect();
                 self.loading = true;
                 self.pending_rev = route.rev;
                 self.picked = None;
@@ -160,7 +166,7 @@ impl Plan {
         // ---- derived, recomputed when any input changes ----
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (route.rev, route.cruise.to_bits(), self.generation, wx.generation, self.forecast.generation, data_expired).hash(&mut h);
-        format!("{minimums:?}{:?}{:?}", outlooks.wpc_day1_end, outlooks.spc_day1_end).hash(&mut h);
+        format!("{minimums:?}{:?}{:?}{:?}{}", outlooks.wpc_day1_end, outlooks.spc_day1_end, route.fuel_stops(), route.stop_minutes).hash(&mut h);
         if let Some(a) = ac {
             format!("{a:?}").hash(&mut h);
         }
@@ -224,6 +230,19 @@ impl Plan {
 
     /// Navlog, altitude path and hazards for a departure time.
     fn analyze_at(&self, route: &Route, ac: &Aircraft, wx: &Wx, departure: chrono::DateTime<chrono::Utc>) -> (NavLog, Vec<[f64; 2]>, Vec<Hazard>) {
+        // fuel stops with their field elevation (the database's, else the terrain there)
+        let mut along = 0.0;
+        let mut stops = Vec::new();
+        for (i, w) in route.waypoints.iter().enumerate() {
+            if i > 0 {
+                let a = &route.waypoints[i - 1];
+                along += crate::nav::geo::distance_nm(a.lat, a.lon, w.lat, w.lon);
+            }
+            if w.fuel_stop && i > 0 && i + 1 < route.waypoints.len() {
+                let elev = self.ends.elevs.get(&w.id).copied().or_else(|| self.profile.samples.iter().min_by(|a, b| (a.d - along).abs().total_cmp(&(b.d - along).abs())).map(|s| s.elev)).unwrap_or(0.0);
+                stops.push((i, elev));
+            }
+        }
         let log = navlog::build(&navlog::NavInput {
             waypoints: &route.waypoints,
             aircraft: ac,
@@ -232,13 +251,11 @@ impl Plan {
             dep_elev: self.dep_elev,
             dest_elev: self.dest_elev,
             winds: &self.winds,
+            stops: &stops,
+            ground_min: route.stop_minutes,
         });
-        let alt_path = if log.rows.is_empty() {
-            vec![]
-        } else {
-            let cruise = route.cruise.max(self.dep_elev);
-            vec![[0.0, self.dep_elev], [log.toc_dist.unwrap_or(0.0), cruise], [log.tod_dist.unwrap_or(log.total_dist), cruise], [log.total_dist, self.dest_elev + 1000.0]]
-        };
+        let alt_path = if log.rows.is_empty() { vec![] } else { log.alt_path.clone() };
+        let stop_dists: Vec<f64> = log.segments.iter().rev().skip(1).map(|s| s.end_d).collect();
         let hazards = hazards::analyze(&hazards::HazardInput {
             waypoints: &route.waypoints,
             profile: &self.profile,
@@ -249,6 +266,7 @@ impl Plan {
             tfrs: &wx.tfrs,
             sigmets: &wx.sigmets,
             gairmets: &wx.gairmets,
+            stop_dists: &stop_dists,
         });
         (log, alt_path, hazards)
     }
@@ -258,24 +276,29 @@ impl Plan {
     fn judge(&self, route: &Route, ac: &Aircraft, log: &NavLog, hazards: &[Hazard], departure: chrono::DateTime<chrono::Utc>, outlooks: &crate::wx::official::Outlooks, minimums: &Minimums, data_expired: bool) -> Verdict {
         let eta = departure + chrono::Duration::milliseconds((log.total_time * 60_000.0) as i64);
         let fc = &self.forecast;
-        let dep_c = fc.dep.as_ref().and_then(|s| s.at(departure));
-        let dest_c = fc.dest.as_ref().and_then(|s| s.at(eta));
         let empty = Vec::new();
         let mut ends = Vec::new();
-        for (role, w, stn, cond, elev, when) in [
-            ("Departure", route.waypoints.first(), fc.dep.as_ref(), dep_c.as_ref(), self.dep_elev, departure),
-            ("Destination", route.waypoints.last(), fc.dest.as_ref(), dest_c.as_ref(), self.dest_elev, eta),
-        ] {
-            let Some(w) = w else { continue };
+        let n = route.waypoints.len();
+        // departure, each fuel stop at its arrival time, destination
+        let mut points: Vec<(&'static str, usize, Option<&crate::wx::forecast::StationWx>, f64, chrono::DateTime<chrono::Utc>)> = vec![("Departure", 0, fc.dep.as_ref(), self.dep_elev, departure)];
+        for seg in log.segments.iter().filter(|s| s.to_index + 1 < n) {
+            let id = &route.waypoints[seg.to_index].id;
+            let elev = self.ends.elevs.get(id).copied().unwrap_or(0.0);
+            points.push(("Fuel stop", seg.to_index, fc.stops.iter().find(|s| &s.airport == id), elev, seg.arrive));
+        }
+        points.push(("Destination", n - 1, fc.dest.as_ref(), self.dest_elev, eta));
+        let conds: Vec<Option<crate::wx::forecast::Conditions>> = points.iter().map(|p| p.2.and_then(|s| s.at(p.4))).collect();
+        for (k, (role, i, stn, elev, when)) in points.iter().enumerate() {
+            let w = &route.waypoints[*i];
             ends.push(verdict::End {
                 role,
                 airport: &w.id,
                 is_airport: w.kind == Kind::Airport && (stn.is_some() || !fc.loading),
-                cond,
+                cond: conds[k].as_ref(),
                 runways: self.ends.runways.get(&w.id).unwrap_or(&empty),
-                elev,
+                elev: *elev,
                 offset_nm: stn.map(|s| s.offset_nm).unwrap_or(0.0),
-                when,
+                when: *when,
             });
         }
         // the official outlook days the flight spans

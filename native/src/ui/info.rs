@@ -91,6 +91,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let screen = ctx.content_rect();
     let mut close = false;
     let mut route_add: Option<(Place, bool)> = None;
+    let mut stop_toggle: Option<usize> = None;
+    // where this airport sits in the route (fuel stops are the airports in between)
+    let n_wp = app.saved.route.waypoints.len();
+    let stops_at: Vec<(usize, String, bool)> = app.saved.route.waypoints.iter().enumerate().filter(|(i, w)| *i > 0 && *i + 1 < n_wp && w.kind == Kind::Airport).map(|(i, w)| (i, w.id.clone(), w.fuel_stop)).collect();
     let mut open_airport: Option<String> = None;
     let mut toggle_raw = false;
     if let Selection::Airport(id) = &sel {
@@ -147,6 +151,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                         if widgets::button(ui, format!("{}  Start here", ph::NAVIGATION_ARROW)).on_hover_text("Start a new route here").clicked() {
                             route_add = Some((place.clone(), true));
+                        }
+                        let plain = d["id"].as_str().unwrap_or("");
+                        if let Some((i, _, on)) = stops_at.iter().find(|(_, id, _)| *id == code || id == plain) {
+                            let label = if *on { format!("{}  Fuel stop {}", ph::GAS_PUMP, ph::CHECK) } else { format!("{}  Fuel stop", ph::GAS_PUMP) };
+                            if widgets::button(ui, label).on_hover_text("Land here, top off and go on").clicked() {
+                                stop_toggle = Some(*i);
+                            }
                         }
                     });
                     ui.add_space(6.0);
@@ -286,6 +297,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     });
     if toggle_raw {
         app.saved.raw_wx = !app.saved.raw_wx;
+    }
+    if let Some(i) = stop_toggle {
+        app.saved.route.toggle_fuel_stop(i);
     }
     if let Some((p, direct)) = route_add {
         if direct {

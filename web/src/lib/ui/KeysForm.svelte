@@ -64,13 +64,6 @@
       fields: [{ id: 'windyMap', label: 'Map Forecast API key', placeholder: 'Paste the map key' }],
     },
     {
-      title: 'Windy winds aloft',
-      blurb: 'Winds and temperatures at altitude for the navlog and freezing level. Without it the app uses Open-Meteo (GFS).',
-      link: ['https://api.windy.com/keys', 'api.windy.com/keys'],
-      test: 'windyPoint',
-      fields: [{ id: 'windyPoint', label: 'Point Forecast API key', placeholder: 'Paste the point forecast key' }],
-    },
-    {
       title: 'FAA NOTAMs',
       blurb: 'Airport, en route, FDC and TFR NOTAMs along your route. Register a free app on the FAA API portal and copy its client ID and secret.',
       link: ['https://api.faa.gov/s/', 'api.faa.gov'],

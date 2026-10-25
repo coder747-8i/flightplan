@@ -278,18 +278,27 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             if label.clicked() {
                 fly = Some((w.lon, w.lat));
             }
+            if w.fuel_stop {
+                ui.label(RichText::new(format!("{} Fuel stop", ph::GAS_PUMP)).font(theme::semibold(11.0)).color(t.accent));
+            }
             let sub = if w.kind == Kind::Airport || w.detail.is_empty() { w.name.clone() } else { w.detail.clone() };
             ui.add(egui::Label::new(RichText::new(sub).size(11.5).color(t.text3)).truncate());
         });
+        let can_stop = w.kind == Kind::Airport && i > 0 && i + 1 < n;
         // row actions only on hover, to keep the list quiet
         let hovered = ui.rect_contains_pointer(row.response.rect.expand2(vec2(0.0, 2.0)));
         if hovered {
             let r = row.response.rect;
             let mut x = r.right();
-            for (icon, tip, what, enabled) in [(ph::X, "Remove", "remove", true), (ph::CARET_DOWN, "Move down", "down", i + 1 < n), (ph::CARET_UP, "Move up", "up", i > 0)] {
+            let pump_tip = if w.fuel_stop { "Not a fuel stop" } else { "Make this a fuel stop: land, top off, go on" };
+            for (icon, tip, what, enabled) in [(ph::X, "Remove", "remove", true), (ph::CARET_DOWN, "Move down", "down", i + 1 < n), (ph::CARET_UP, "Move up", "up", i > 0), (ph::GAS_PUMP, pump_tip, "fuel", can_stop)] {
+                if what == "fuel" && !can_stop {
+                    continue;
+                }
                 let br = egui::Rect::from_min_size(egui::pos2(x - 20.0, r.top()), vec2(20.0, r.height()));
                 x -= 22.0;
-                let resp = ui.put(br, egui::Button::new(RichText::new(icon).size(12.0).color(t.text3)).frame(false)).on_hover_text(tip);
+                let color = if what == "fuel" { t.accent } else { t.text3 };
+                let resp = ui.put(br, egui::Button::new(RichText::new(icon).size(12.0).color(color)).frame(false)).on_hover_text(tip);
                 if enabled && resp.clicked() {
                     op = Some((what, i));
                 }
@@ -312,6 +321,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     match op {
         Some(("up", i)) => app.saved.route.move_to(i, i - 1),
         Some(("down", i)) => app.saved.route.move_to(i, i + 1),
+        Some(("fuel", i)) => app.saved.route.toggle_fuel_stop(i),
         Some(("remove", i)) => {
             let uid = app.saved.route.waypoints[i].uid;
             app.saved.route.remove(uid);
@@ -320,6 +330,28 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     }
     if let Some((lon, lat)) = fly {
         app.map.fly_to(lon, lat, 11.0);
+    }
+    // fuel stops: what each flight lands with, and the time on the ground
+    if let Some(log) = app.plan.log.clone().filter(|l| l.segments.len() > 1) {
+        ui.add_space(6.0);
+        egui::Frame::new().fill(t.accent_soft).corner_radius(egui::CornerRadius::same(9)).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            for (k, seg) in log.segments.iter().enumerate() {
+                let from = if k == 0 { app.saved.route.waypoints[0].id.clone() } else { log.segments[k - 1].to.clone() };
+                let low = seg.fuel_at_landing < log.reserve_fuel;
+                ui.label(
+                    RichText::new(format!("{from} → {}: {:.0} NM · {} · lands with {:.1} gal", seg.to, seg.end_d - seg.start_d, fmt_time((seg.arrive - seg.depart).num_seconds() as f64 / 60.0), seg.fuel_at_landing))
+                        .size(11.5)
+                        .color(if low { t.bad } else { t.text2 }),
+                );
+            }
+            ui.horizontal(|ui| {
+                faint(ui, &t, format!("{}  Top off at each stop, on the ground", ph::GAS_PUMP));
+                ui.add(egui::DragValue::new(&mut app.saved.route.stop_minutes).range(10.0..=240.0).speed(1.0).suffix(" min"));
+            });
+        });
+    } else if app.saved.route.waypoints.len() > 2 && app.plan.log.as_ref().is_some_and(|l| l.fuel_at_landing < l.reserve_fuel) {
+        widgets::para(ui, format!("{}  Not enough fuel non-stop? Hover an airport in the list and tap the pump to make it a fuel stop.", ph::GAS_PUMP), t.text2, 11.5);
     }
 
     // ---- totals ----
@@ -335,7 +367,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
                     });
                 };
                 stat(&mut c[0], format!("{:.0}", log.total_dist), "NM", false);
-                stat(&mut c[1], fmt_time(log.total_time), "time", false);
+                stat(&mut c[1], fmt_time(log.total_time), if log.segments.len() > 1 { "time incl. stops" } else { "time" }, false);
                 stat(&mut c[2], format!("{:.1}", log.trip_fuel), "gal burn", false);
                 stat(&mut c[3], format!("{:.1}", log.fuel_at_landing), "gal left", log.fuel_at_landing < log.reserve_fuel);
             });
@@ -351,8 +383,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         let src = match app.plan.wind_source.as_str() {
-            "windy" => "Windy (GFS)",
-            "open-meteo" => "Open-Meteo GFS",
+            "nws-fb" => "NWS winds-aloft forecast (FB)",
             _ => "loading…",
         };
         faint(ui, &t, format!("Winds aloft: {src}"));
