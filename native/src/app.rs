@@ -68,6 +68,8 @@ pub struct App {
     pub store: Store,
     pub saved: Saved,
     pub fleet: Fleet,
+    /// flight plans saved in the app
+    pub plans: Vec<crate::store::SavedPlan>,
     pub prefs: Prefs,
     pub plan: Plan,
     pub wx: Wx,
@@ -127,6 +129,7 @@ impl App {
         let store = Store::new(be.user_dir());
         let saved = store.load_saved();
         let fleet = store.load_fleet();
+        let plans = store.load_plans();
         let prefs = store.load_prefs();
         let palette = if saved.night { style::night() } else { style::day() };
         let t = theme::tokens(saved.night);
@@ -144,6 +147,7 @@ impl App {
             store,
             saved,
             fleet,
+            plans,
             prefs,
             plan: Plan::default(),
             wx: Wx::default(),
@@ -201,6 +205,54 @@ impl App {
         self.saved.night = night;
         self.palette = if night { style::night() } else { style::day() };
         self.t = theme::tokens(night);
+    }
+
+    /// Save the current route as a named plan (replacing one with the same name).
+    pub fn save_plan(&mut self, name: &str) {
+        let r = &self.saved.route;
+        let ac = self.fleet.active();
+        let log = self.plan.log.as_ref();
+        let name = name.trim();
+        let name = if name.is_empty() { r.text() } else { name.to_string() };
+        let plan = crate::store::SavedPlan {
+            id: self.plans.iter().find(|p| p.name == name).map(|p| p.id.clone()).unwrap_or_else(crate::model::aircraft::uid),
+            name: name.clone(),
+            saved_at: chrono::Local::now().to_rfc3339(),
+            route: r.clone(),
+            route_text: r.text(),
+            fuel_stops: r.fuel_stops().into_iter().map(|i| r.waypoints[i].id.clone()).collect(),
+            stop_minutes: r.stop_minutes,
+            aircraft_id: ac.map(|a| a.id.clone()).unwrap_or_default(),
+            aircraft: ac.map(|a| if a.tail.is_empty() { a.name.clone() } else { format!("{} · {}", a.tail, a.name) }).unwrap_or_default(),
+            distance_nm: log.map(|l| l.total_dist).unwrap_or(0.0),
+            ete_min: log.map(|l| l.total_time).unwrap_or(0.0),
+            fuel_gal: log.map(|l| l.trip_fuel).unwrap_or(0.0),
+            notes: String::new(),
+        };
+        self.plans.retain(|p| p.name != name);
+        self.plans.insert(0, plan);
+        self.store.save_plans(&self.plans);
+        self.toast(format!("Saved \"{name}\""));
+    }
+
+    /// Load a saved plan into the route (and select its aircraft if it's still in the fleet).
+    pub fn load_plan(&mut self, id: &str) {
+        let Some(p) = self.plans.iter().find(|p| p.id == id).cloned() else { return };
+        let rev = self.saved.route.rev + 1;
+        let mut route = p.route.clone();
+        route.rev = rev;
+        route.editing = false;
+        self.saved.route = route;
+        if self.fleet.list.iter().any(|a| a.id == p.aircraft_id) {
+            self.fleet.active = p.aircraft_id.clone();
+        }
+        self.fit_route();
+        self.toast(format!("Loaded \"{}\"", p.name));
+    }
+
+    pub fn delete_plan(&mut self, id: &str) {
+        self.plans.retain(|p| p.id != id);
+        self.store.save_plans(&self.plans);
     }
 
     pub fn data_expired(&self) -> bool {

@@ -125,6 +125,38 @@ impl Fleet {
     }
 }
 
+/// A flight plan saved in the app (user/plans.json): the route with its fuel stops, altitude,
+/// departure time and ground time, plus a summary for the list.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPlan {
+    pub id: String,
+    pub name: String,
+    /// RFC 3339, local time of saving
+    pub saved_at: String,
+    pub route: Route,
+    /// the route as text, e.g. "KSDL PXR V327 FLG KGCN"
+    pub route_text: String,
+    /// fuel-stop airports, in order (also flagged on the route's waypoints)
+    #[serde(default)]
+    pub fuel_stops: Vec<String>,
+    /// minutes on the ground at each fuel stop
+    #[serde(default)]
+    pub stop_minutes: f64,
+    #[serde(default)]
+    pub aircraft_id: String,
+    #[serde(default)]
+    pub aircraft: String,
+    #[serde(default)]
+    pub distance_nm: f64,
+    #[serde(default)]
+    pub ete_min: f64,
+    #[serde(default)]
+    pub fuel_gal: f64,
+    #[serde(default)]
+    pub notes: String,
+}
+
 pub struct Store {
     dir: PathBuf,
 }
@@ -153,6 +185,14 @@ impl Store {
     pub fn save_saved(&self, s: &Saved) {
         if let Err(e) = write(&self.dir.join("desktop.json"), s) {
             tracing::warn!("couldn't save state: {e:#}");
+        }
+    }
+    pub fn load_plans(&self) -> Vec<SavedPlan> {
+        read(&self.dir.join("plans.json")).unwrap_or_default()
+    }
+    pub fn save_plans(&self, plans: &[SavedPlan]) {
+        if let Err(e) = write(&self.dir.join("plans.json"), &plans) {
+            tracing::warn!("couldn't save flight plans: {e:#}");
         }
     }
     pub fn load_fleet(&self) -> Fleet {

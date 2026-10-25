@@ -152,6 +152,34 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
             if ui.add(egui::Button::new(RichText::new(ph::FOLDER_OPEN).size(15.0)).frame(false)).on_hover_text("Open a Garmin .fpl or GPX file").clicked() {
                 action = Some("import");
             }
+            // save the plan in the app, under a name
+            let name_id = egui::Id::new("save-plan-name");
+            let resp = ui.add_enabled_ui(app.saved.route.waypoints.len() >= 2, |ui| {
+                ui.menu_button(RichText::new(ph::FLOPPY_DISK).size(15.0), |ui| {
+                    ui.set_width(240.0);
+                    ui.label(RichText::new("Save flight plan").font(theme::semibold(13.0)));
+                    let mut name: String = ui.data(|d| d.get_temp(name_id)).unwrap_or_else(|| {
+                        let w = &app.saved.route.waypoints;
+                        match (w.first(), w.last()) {
+                            (Some(a), Some(b)) => format!("{} to {}", a.id, b.id),
+                            _ => String::new(),
+                        }
+                    });
+                    let r = ui.add(egui::TextEdit::singleline(&mut name).hint_text("Name").desired_width(220.0));
+                    ui.data_mut(|d| d.insert_temp(name_id, name.clone()));
+                    let stops = app.saved.route.fuel_stops().len();
+                    if stops > 0 {
+                        faint(ui, &t, format!("{} Saves the {stops} fuel stop{} too", ph::GAS_PUMP, if stops == 1 { "" } else { "s" }));
+                    }
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if widgets::primary(ui, &t, format!("{}  Save", ph::FLOPPY_DISK)).clicked() || enter {
+                        app.save_plan(&name);
+                        ui.data_mut(|d| d.remove::<String>(name_id));
+                        ui.close();
+                    }
+                })
+            });
+            resp.response.on_hover_text("Save this flight plan in the app");
             let r = ui.add_enabled(has, egui::Button::new(RichText::new(ph::SHARE_NETWORK).size(15.0)).frame(false)).on_hover_text("Export to FltPlan.com, Garmin .fpl or GPX");
             mark(ui.ctx(), "route-export", r.rect);
             if r.clicked() {
@@ -416,11 +444,66 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         };
         faint(ui, &t, format!("Winds aloft: {src}"));
     }
+    saved_plans(app, ui);
     if app.plan.loading {
         faint(ui, &t, "Updating the profile…");
     }
     if !app.plan.error.is_empty() {
         widgets::para(ui, &app.plan.error, t.bad, 12.0);
+    }
+}
+
+/// The flight plans saved in the app: load or delete.
+fn saved_plans(app: &mut App, ui: &mut egui::Ui) {
+    let t = app.t;
+    if app.plans.is_empty() {
+        return;
+    }
+    let mut load: Option<String> = None;
+    let mut delete: Option<String> = None;
+    let open_default = app.saved.route.waypoints.is_empty();
+    widgets::fold(ui, &t, "route-saved-plans", &format!("Saved plans ({})", app.plans.len()), open_default, |ui| {
+        for p in &app.plans {
+            egui::Frame::new().fill(t.surface2).corner_radius(egui::CornerRadius::same(9)).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - 80.0);
+                        ui.label(RichText::new(&p.name).font(theme::semibold(12.5)));
+                        ui.add(egui::Label::new(RichText::new(&p.route_text).font(theme::mono(11.0)).color(t.text2)).truncate());
+                        let mut meta = Vec::new();
+                        if p.distance_nm > 0.0 {
+                            meta.push(format!("{:.0} NM · {}", p.distance_nm, fmt_time(p.ete_min)));
+                        }
+                        if !p.fuel_stops.is_empty() {
+                            meta.push(format!("{} {}", ph::GAS_PUMP, p.fuel_stops.join(", ")));
+                        }
+                        if !p.aircraft.is_empty() {
+                            meta.push(p.aircraft.clone());
+                        }
+                        if let Ok(d) = chrono::DateTime::parse_from_rfc3339(&p.saved_at) {
+                            meta.push(format!("saved {}", d.format("%b %-d %H:%M")));
+                        }
+                        ui.add(egui::Label::new(RichText::new(meta.join(" · ")).size(10.5).color(t.text3)).wrap());
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new(ph::TRASH).size(13.0).color(t.text3)).frame(false)).on_hover_text("Delete").clicked() {
+                            delete = Some(p.id.clone());
+                        }
+                        if widgets::small_button(ui, "Load").clicked() {
+                            load = Some(p.id.clone());
+                        }
+                    });
+                });
+            });
+            ui.add_space(4.0);
+        }
+    });
+    if let Some(id) = load {
+        app.load_plan(&id);
+    }
+    if let Some(id) = delete {
+        app.delete_plan(&id);
     }
 }
 

@@ -154,6 +154,8 @@ pub fn act(app: &mut App, a: &str, arg: &str, dir: &std::path::Path) {
             "tour" => app.tour = Some(super::tour::Tour::default()),
             "profile" => app.saved.profile_open = arg != "off",
             "cruise" => app.saved.route.cruise = arg.parse().unwrap_or(6500.0),
+            "saveplan" => app.save_plan(arg),
+            "clearroute" => app.saved.route.clear(),
             // fuelstop <ID>: toggle a fuel stop at that waypoint
             "fuelstop" => {
                 if let Some(i) = app.saved.route.waypoints.iter().position(|w| w.id == *arg) {
