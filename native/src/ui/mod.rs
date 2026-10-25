@@ -9,6 +9,7 @@ pub mod import;
 pub mod info;
 pub mod keys;
 pub mod layers;
+pub mod notams;
 pub mod onboarding;
 pub mod profile;
 pub mod route;

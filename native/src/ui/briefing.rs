@@ -4,7 +4,6 @@
 
 use super::widgets::{self, faint, section};
 use crate::app::App;
-use crate::backend::Task;
 use crate::io::pdf::{Align, Pdf, C, MARGIN, PAGE_W};
 use crate::model::aircraft::compute_wb;
 use crate::model::place::Kind;
@@ -30,8 +29,6 @@ pub struct Briefing {
     hid_profile: bool,
     pub image: Option<(egui::ColorImage, egui::TextureHandle)>,
     airports: Vec<Value>,
-    notams: Task<Value>,
-    notam_items: Option<Value>,
     status: String,
 }
 
@@ -46,21 +43,6 @@ impl Briefing {
             .collect();
         let ids: Vec<String> = route.waypoints.iter().filter(|w| w.kind == Kind::Airport).map(|w| w.wx_id()).collect();
         app.route_wx.update(ids.clone(), &app.be, true);
-        let mut notams = Task::default();
-        if app.keys.notams && route.waypoints.len() >= 2 {
-            // airports by id, the route by points every ~25 NM, and the ARTCCs crossed
-            let mut points = Vec::new();
-            let mut last = -100.0;
-            for s in &app.plan.profile.samples {
-                if s.d - last >= 25.0 {
-                    points.push([s.lon, s.lat]);
-                    last = s.d;
-                }
-            }
-            let artccs: Vec<String> = airports.iter().filter_map(|a| a["artcc"].as_str().map(String::from)).filter(|s| !s.is_empty()).collect();
-            let st = app.be.server.clone();
-            notams = app.be.spawn(async move { flightplan_server::notam::fetch(st, flightplan_server::notam::NotamReq { locations: ids, points, radius: Some(25.0), artccs }).await });
-        }
         let snapshot = route.waypoints.len() >= 2;
         let hid_profile = app.saved.profile_open;
         if snapshot {
@@ -73,8 +55,6 @@ impl Briefing {
             hid_profile,
             image: None,
             airports,
-            notams,
-            notam_items: None,
             status: String::new(),
         }
     }
@@ -140,9 +120,6 @@ pub fn show(app: &mut App, ctx: &egui::Context, mut b: Briefing) -> Option<Brief
     if b.capturing() {
         snapshot(app, ctx, &mut b);
         return Some(b);
-    }
-    if let Some(v) = b.notams.poll() {
-        b.notam_items = Some(v);
     }
     let ids: Vec<String> = app.saved.route.waypoints.iter().filter(|w| w.kind == Kind::Airport).map(|w| w.wx_id()).collect();
     app.route_wx.update(ids, &app.be, false);
@@ -337,25 +314,18 @@ fn body(app: &mut App, ui: &mut egui::Ui, b: &Briefing) {
     }
 
     section(ui, &t, "NOTAMs");
-    match &b.notam_items {
-        Some(v) if v["configured"].as_bool() == Some(true) => {
-            let items = v["items"].as_array().cloned().unwrap_or_default();
-            faint(ui, &t, format!("{} NOTAMs for the route's airports, the route corridor and ARTCCs (FAA NOTAM API).", items.len()));
-            for n in items.iter().take(150) {
-                ui.horizontal_top(|ui| {
-                    widgets::chip(ui, &t, &format!("{} · {}", str_of(&n["location"]), str_of(&n["category"])), None, None);
-                    ui.add(egui::Label::new(RichText::new(str_of(&n["text"])).font(theme::mono(11.0))).wrap());
-                });
-            }
-        }
-        _ if app.keys.notams => {
-            faint(ui, &t, "Loading NOTAMs…");
-        }
-        _ => {
-            widgets::para(ui, "Add FAA NOTAM API credentials in Settings to list NOTAMs here. Meanwhile, use the NOTAM links above or 1800wxbrief.", t.text2, 12.0);
+    let rn = &app.plan.notams;
+    if !app.keys.notams {
+        widgets::para(ui, "Add a free FAA NOTAM API key in Settings to list NOTAMs here. Meanwhile, use the NOTAM links above or 1800wxbrief.", t.text2, 12.0);
+    } else if !rn.done {
+        faint(ui, &t, "Loading NOTAMs…");
+    } else {
+        faint(ui, &t, format!("{} NOTAMs for the route's airports and navaids, a 10 NM corridor and the ARTCCs (FAA NOTAM API). Most important first.", rn.items.len()));
+        let items = rn.items.clone();
+        for n in items.iter().take(150) {
+            super::notams::row(ui, &t, n, app.saved.raw_wx);
         }
     }
-
     ui.add_space(8.0);
     ui.columns(2, |c| {
         let ui = &mut c[0];
@@ -623,13 +593,12 @@ pub fn build_pdf(app: &App, b: &Briefing) -> anyhow::Result<Vec<u8>> {
         }
         p.y += 2.0;
     }
-    if let Some(v) = &b.notam_items {
-        if v["configured"].as_bool() == Some(true) {
-            p.heading("NOTAMs");
-            for n in v["items"].as_array().into_iter().flatten().take(150) {
-                p.para(&format!("{} · {} · {}", str_of(&n["location"]), str_of(&n["category"]), str_of(&n["number"])), 8.0, true, C::TEXT);
-                p.para_at(MARGIN + 3.0, full_w - 3.0, &str_of(&n["text"]), 7.5, false, C::MUTED);
-            }
+    if app.plan.notams.done && app.keys.notams {
+        p.heading("NOTAMs");
+        for n in app.plan.notams.items.iter().take(150) {
+            let loc = if n.icao.is_empty() { &n.location } else { &n.icao };
+            p.para(&format!("{loc} · {} · {} · {}", n.category, n.number, n.window()), 8.0, true, C::TEXT);
+            p.para_at(MARGIN + 3.0, full_w - 3.0, &n.plain, 7.5, false, C::MUTED);
         }
     }
 

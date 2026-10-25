@@ -444,6 +444,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         };
         faint(ui, &t, format!("Winds aloft: {src}"));
     }
+    super::notams::route_section(ui, app);
     saved_plans(app, ui);
     if app.plan.loading {
         faint(ui, &t, "Updating the profile…");

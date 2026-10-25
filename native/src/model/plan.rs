@@ -50,6 +50,8 @@ pub struct Plan {
     pub hazards: Vec<Hazard>,
     /// METAR / TAF / NBM at the ends and model weather along the route
     pub forecast: RouteForecast,
+    /// route NOTAMs (FAA NOTAM API)
+    pub notams: crate::wx::notams::RouteNotams,
     pub verdict: Option<Verdict>,
     /// the call for departures every 3 h over the next five days: (unix time, call)
     pub windows: Vec<(i64, verdict::Call)>,
@@ -105,8 +107,9 @@ impl Plan {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn update(&mut self, be: &Backend, route: &Route, ac: Option<&Aircraft>, wx: &Wx, outlooks: &crate::wx::official::Outlooks, minimums: &Minimums, data_expired: bool) {
+    pub fn update(&mut self, be: &Backend, route: &Route, ac: Option<&Aircraft>, wx: &Wx, outlooks: &crate::wx::official::Outlooks, minimums: &Minimums, data_expired: bool, notams_configured: bool) {
         self.forecast.update(be, &route.waypoints);
+        self.notams.update(be, &route.waypoints, notams_configured);
         // ---- refetch geometry-dependent data, debounced ----
         if route.rev != self.fetched_rev {
             let first = self.changed_at.is_none();
@@ -165,7 +168,7 @@ impl Plan {
 
         // ---- derived, recomputed when any input changes ----
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (route.rev, route.cruise.to_bits(), self.generation, wx.generation, self.forecast.generation, data_expired).hash(&mut h);
+        (route.rev, route.cruise.to_bits(), self.generation, wx.generation, self.forecast.generation, self.notams.generation, data_expired).hash(&mut h);
         format!("{minimums:?}{:?}{:?}{:?}{}", outlooks.wpc_day1_end, outlooks.spc_day1_end, route.fuel_stops(), route.stop_minutes).hash(&mut h);
         if let Some(a) = ac {
             format!("{a:?}").hash(&mut h);
@@ -315,6 +318,8 @@ impl Plan {
             ends,
             official,
             official_known: !fc.loading,
+            notams: (self.notams.configured && self.notams.done).then_some(self.notams.items.as_slice()),
+            route_navaids: route.waypoints.iter().filter(|w| w.kind == Kind::Navaid).map(|w| w.id.clone()).collect(),
             log: Some(log),
             cruise_ft: route.cruise,
             max_terrain_ft: max_terrain,

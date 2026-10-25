@@ -19,6 +19,7 @@ enum Tab {
     Runways,
     Freqs,
     Fbo,
+    Notams,
 }
 
 #[derive(Default)]
@@ -32,6 +33,8 @@ pub struct InfoCard {
     taf: Option<Value>,
     fbo: Option<Value>,
     show_others: bool,
+    notams: Task<Value>,
+    notam_data: Option<Value>,
 }
 
 fn s(v: &Value) -> String {
@@ -67,6 +70,8 @@ impl InfoCard {
         self.metar = None;
         self.taf = None;
         self.fbo = None;
+        self.notam_data = None;
+        self.notams = Task::default();
         self.tab = Tab::Info;
         match app_server.try_data().and_then(|d| d.db.airport(id)) {
             Ok(Some(v)) => {
@@ -97,10 +102,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     let stops_at: Vec<(usize, String, bool)> = app.saved.route.waypoints.iter().enumerate().filter(|(i, w)| *i > 0 && *i + 1 < n_wp && w.kind == Kind::Airport).map(|(i, w)| (i, w.id.clone(), w.fuel_stop)).collect();
     let mut open_airport: Option<String> = None;
     let mut toggle_raw = false;
+    let mut open_settings = false;
     if let Selection::Airport(id) = &sel {
         if app.info.id != *id {
             let server = app.be.server.clone();
             app.info.load(&server, &app.be, id);
+        }
+        if let Some(v) = app.info.notams.poll() {
+            app.info.notam_data = Some(v);
         }
         if let Some((m, tf)) = app.info.wx.poll() {
             app.info.metar = m.as_array().and_then(|a| a.first().cloned());
@@ -162,7 +171,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     });
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        for (tab, label) in [(Tab::Info, "Info"), (Tab::Weather, "Weather"), (Tab::Runways, "Runways"), (Tab::Freqs, "Freqs"), (Tab::Fbo, "FBO")] {
+                        for (tab, label) in [(Tab::Info, "Info"), (Tab::Weather, "Weather"), (Tab::Runways, "Runways"), (Tab::Freqs, "Freqs"), (Tab::Fbo, "FBO"), (Tab::Notams, "NOTAMs")] {
                             if ui.selectable_label(info.tab == tab, RichText::new(label).font(theme::semibold(12.0))).clicked() {
                                 info.tab = tab;
                             }
@@ -247,6 +256,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                     }
                                 });
                             }
+                            Tab::Notams => {
+                                if info.notam_data.is_none() && !info.notams.pending() && app.keys.notams {
+                                    let id = d["icao"].as_str().filter(|x| !x.is_empty()).unwrap_or(d["id"].as_str().unwrap_or("")).to_string();
+                                    info.notams = crate::wx::notams::airport(&app.be, &id);
+                                }
+                                let (raw, settings) = super::notams::airport_tab(ui, &t, app.keys.notams, app.saved.raw_wx, info.notam_data.as_ref());
+                                toggle_raw |= raw;
+                                open_settings |= settings;
+                            }
                             Tab::Fbo => {
                                 if info.fbo.is_none() {
                                     let id = d["icao"].as_str().filter(|x| !x.is_empty()).unwrap_or(d["id"].as_str().unwrap_or("")).to_string();
@@ -297,6 +315,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     });
     if toggle_raw {
         app.saved.raw_wx = !app.saved.raw_wx;
+    }
+    if open_settings {
+        app.panel = Panel::Settings;
     }
     if let Some(i) = stop_toggle {
         app.saved.route.toggle_fuel_stop(i);

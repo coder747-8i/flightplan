@@ -10,6 +10,7 @@ use super::hazards::Hazard;
 use super::navlog::{thousands, NavLog};
 use super::profile::Level;
 use crate::wx::forecast::{Conditions, Source};
+use crate::wx::notams::{Effect, Notam};
 use crate::wx::official::Hit;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -115,6 +116,10 @@ pub struct Input<'a> {
     pub official: Vec<&'a Hit>,
     /// false while the official products are still loading
     pub official_known: bool,
+    /// route NOTAMs; None when NOTAMs aren't set up (or still loading)
+    pub notams: Option<&'a [Notam]>,
+    /// identifiers of the navaids the route uses
+    pub route_navaids: Vec<String>,
     pub log: Option<&'a NavLog>,
     pub cruise_ft: f64,
     /// highest terrain along the route (ft)
@@ -271,6 +276,50 @@ fn end_checks(e: &End, m: &Minimums, max_xwind: f64, out: &mut Vec<Factor>) {
     }
 }
 
+/// NOTAMs at an airport at the time you'd be there.
+fn notam_end_checks(e: &End, notams: &[Notam], out: &mut Vec<Factor>) {
+    let who = format!("{} {}", e.role, e.airport);
+    let here: Vec<&Notam> = notams.iter().filter(|n| n.at_airport(e.airport) && n.active_at(e.when)).collect();
+    for n in &here {
+        match &n.effect {
+            Effect::AerodromeClosed => out.push(f(Call::NoGo, "NOTAM", format!("{who} closed"), format!("NOTAM {}: {}", n.number, n.plain), None)),
+            Effect::FuelUnavailable if e.role == "Fuel stop" => out.push(f(Call::NoGo, "NOTAM", format!("No fuel at fuel stop {}", e.airport), format!("NOTAM {}: {}", n.number, n.plain), None)),
+            Effect::FuelUnavailable => out.push(f(Call::Caution, "NOTAM", format!("Fuel unavailable at {}", e.airport), format!("NOTAM {}: {}", n.number, n.plain), None)),
+            _ => {}
+        }
+    }
+    // runways: all closed is a no-go, some closed a caution
+    let closed: Vec<String> = here.iter().filter_map(|n| if let Effect::RunwayClosed(ids) = &n.effect { Some(ids.clone()) } else { None }).flatten().collect();
+    if !closed.is_empty() {
+        let norm = |s: &str| s.trim_start_matches('0').to_string();
+        let all = !e.runways.is_empty() && e.runways.iter().all(|(id, _)| closed.iter().any(|c| norm(c) == norm(id)));
+        let list = closed.join(", ");
+        if all {
+            out.push(f(Call::NoGo, "NOTAM", format!("All runways closed at {}", e.airport), format!("Runways {list} closed when you'd be there (NOTAM)."), None));
+        } else {
+            out.push(f(Call::Caution, "NOTAM", format!("Runway {list} closed at {}", e.airport), "Plan for the runways that are open: check the crosswind on them.".to_string(), None));
+        }
+    }
+}
+
+/// NOTAMs along the route during the flight: navaids you use, GPS, airspace.
+fn notam_route_checks(notams: &[Notam], navaids: &[String], from: DateTime<Utc>, to: DateTime<Utc>, out: &mut Vec<Factor>) {
+    for n in notams.iter().filter(|n| n.active_during(from, to)) {
+        if n.effect == Effect::NavaidOut && navaids.iter().any(|id| n.location == *id) {
+            out.push(f(Call::Caution, "NOTAM", format!("{} out of service", n.location), format!("Your route uses it. NOTAM {}: {}", n.number, n.plain), None));
+        }
+    }
+    let gps: Vec<&Notam> = notams.iter().filter(|n| n.effect == Effect::Gps && n.active_during(from, to)).collect();
+    if let Some(g) = gps.first() {
+        out.push(f(Call::Caution, "NOTAM", "GPS may be unreliable along the route".to_string(), format!("NOTAM {}: {}", g.number, g.plain), None));
+    }
+    let air: Vec<&Notam> = notams.iter().filter(|n| n.effect == Effect::Airspace && n.active_during(from, to)).collect();
+    if !air.is_empty() {
+        let what: Vec<String> = air.iter().take(3).map(|n| n.plain.chars().take(90).collect::<String>()).collect();
+        out.push(f(Call::Caution, "NOTAM", format!("{} airspace NOTAM{} along the route", air.len(), if air.len() == 1 { "" } else { "s" }), what.join(" · "), None));
+    }
+}
+
 fn official_checks(hits: &[&Hit], out: &mut Vec<Factor>) {
     let mut any = false;
     for h in hits {
@@ -303,6 +352,20 @@ pub fn evaluate(i: &Input) -> Verdict {
     }
     for e in &i.ends {
         end_checks(e, m, i.max_xwind, &mut out);
+    }
+    match i.notams {
+        Some(list) => {
+            let before = out.len();
+            for e in &i.ends {
+                notam_end_checks(e, list, &mut out);
+            }
+            let end = i.ends.last().map(|e| e.when).unwrap_or(i.departure);
+            notam_route_checks(list, &i.route_navaids, i.departure, end, &mut out);
+            if out.len() == before {
+                out.push(f(Call::Go, "NOTAM", format!("{} NOTAMs checked", list.len()), "Nothing closes an airport or runway you use, no fuel or navaid outage on your route.", None));
+            }
+        }
+        None => out.push(f(Call::Go, "NOTAM", "NOTAMs not checked", "Add a free FAA NOTAM API key in Settings to include them, or check NOTAMs at 1800wxbrief.", None)),
     }
     if i.official_known {
         official_checks(&i.official, &mut out);
@@ -393,6 +456,8 @@ mod tests {
             ends: vec![End { role: "Departure", airport: "KAAA", is_airport: true, cond: Some(c), runways: &rw, elev: 1000.0, offset_nm: 0.0, when: now }],
             official: vec![],
             official_known: false,
+            notams: None,
+            route_navaids: vec![],
             log: None,
             cruise_ft: 6500.0,
             max_terrain_ft: 2000.0,

@@ -371,7 +371,7 @@ impl eframe::App for App {
         let ac = self.fleet.active().cloned();
         let expired = self.data_expired();
         self.outlooks.update(&self.be);
-        self.plan.update(&self.be, &self.saved.route, ac.as_ref(), &self.wx, &self.outlooks, &self.saved.minimums, expired);
+        self.plan.update(&self.be, &self.saved.route, ac.as_ref(), &self.wx, &self.outlooks, &self.saved.minimums, expired, self.keys.notams);
         if let Some(p) = self.last_proj {
             self.wx.update(&self.be, &self.saved.wx, p.bounds(), p.zoom);
         }
