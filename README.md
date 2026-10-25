@@ -47,7 +47,7 @@ What it does beyond the chart and route:
 - **Fuel stops.** Hover an airport in the middle of the route and tap the pump (or use the
   airport card) to land there and top off. Each flight between stops gets its own climb,
   descent and fuel check, with a ground time you set (45 minutes by default), and the stop's
-  weather is checked for when you'd land there. Export gives one plan per flight.
+  weather is checked for when you'd land there.
 - **Ruler.** The Measure button (or R) measures distance in NM, statute miles and km, with
   true / magnetic course and time at your cruise speed. Ends snap to airports and navaids.
 - **Winds aloft** come from the NWS winds-aloft forecast (FB) of the nearest station, about 24
