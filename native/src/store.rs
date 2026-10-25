@@ -17,11 +17,14 @@ pub struct WxShow {
     pub gairmet: bool,
     pub pireps: bool,
     pub winds: bool,
+    /// SPC convective outlook for the timeline's day
+    #[serde(default)]
+    pub spc: bool,
 }
 
 impl Default for WxShow {
     fn default() -> Self {
-        WxShow { radar: false, metars: true, tfr: true, sigmet: true, gairmet: false, pireps: false, winds: false }
+        WxShow { radar: false, metars: true, tfr: true, sigmet: true, gairmet: false, pireps: false, winds: false, spc: false }
     }
 }
 

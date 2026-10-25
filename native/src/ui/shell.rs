@@ -103,6 +103,7 @@ fn rail_button(ui: &mut egui::Ui, t: &theme::Tokens, icon: &str, label: &str, ac
     let color = if active { t.accent } else if hovered { t.text } else { t.text2 };
     ui.painter().text(rect.center() - vec2(0.0, 7.0), Align2::CENTER_CENTER, icon, egui::FontId::proportional(19.0), color);
     ui.painter().text(rect.center() + vec2(0.0, 13.0), Align2::CENTER_CENTER, label, theme::semibold(10.0), color);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

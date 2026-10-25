@@ -29,16 +29,18 @@ tour of the screen back later. Data lives in the per-user data folder
 
 What it does beyond the chart and route:
 
-- **Plan up to five days ahead.** The timeline under the chart sets the departure time. Radar
-  follows it: live NEXRAD now, then HRRR forecast radar (about 36 to 48 hours out), then
-  model precipitation to five days. Winds aloft, the navlog and the forecasts follow it too.
-  Press play to animate the forecast.
+- **Plan up to five days ahead.** The timeline under the chart sets the departure time. The
+  weather picture follows it, always an official product shown as published: live NEXRAD now,
+  then HRRR forecast radar (about 36 to 48 hours out), then the WPC National Forecast Chart
+  (days 1 to 3) and the WPC precipitation forecast (days 4 and 5). An SPC convective outlook
+  layer covers days 1 to 8. Winds aloft, the navlog and the airport forecasts follow it too.
+  Press play to animate.
 - **Go / no-go.** With a route loaded, the Route panel gives a green, yellow or red call for
   the departure time. It checks departure and arrival weather against your personal minimums
   (Settings): ceiling, visibility, wind, gusts, crosswind on the best runway, thunder and
-  density altitude. The weather comes from the METAR, then the TAF, then NBM model guidance.
-  It also checks thunderstorms, icing and visibility along the route (model forecasts), strong
-  winds aloft over mountains, terrain clearance, TFRs, prohibited and restricted areas, fuel,
+  density altitude. The weather comes from the METAR, then the TAF, then NWS NBM guidance.
+  Along the route it reads the WPC forecast chart and SPC convective outlook for the day you
+  fly, and it checks G-AIRMETs, SIGMETs, strong winds aloft over mountains, terrain clearance, TFRs, prohibited and restricted areas, fuel,
   weight & balance and night. The timeline is coloured with the call for departures every 3
   hours, so the green stretches are your windows. The call is advice only: the pilot in command
   decides.
@@ -95,7 +97,9 @@ There are two ways to make a pack:
 - FAA NASR 28-day subscription, FAA AIS open data (airspace), FAA Digital Obstacle File
 - aviationweather.gov (METAR, TAF, PIREP, AIRMET/SIGMET, G-AIRMET), FAA TFR feed
 - Iowa Environmental Mesonet: NEXRAD radar, HRRR forecast reflectivity, NBM text guidance
-- Open-Meteo: winds aloft (GFS) and model weather along the route and beyond 48 h
+- NOAA map services (mapservices.weather.noaa.gov): WPC National Forecast Chart and
+  precipitation forecasts, SPC convective outlooks
+- Open-Meteo (GFS) or Windy: winds aloft for the navlog
 - Terrain from Mapzen/AWS Terrarium; basemap from OpenFreeMap (OpenStreetMap)
 - FBOs from Overture Maps places plus FAA airport remarks
 - Optional: Windy (map and point forecast) and the FAA NOTAM API, configured in the app's

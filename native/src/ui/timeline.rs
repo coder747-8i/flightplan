@@ -98,11 +98,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         new_time = Some(Utc::now());
                         app.timeline.playing = false;
                     }
-                    if let Some(f) = &app.chart.radar_frame {
-                        if app.chart.radar_loading {
-                            ui.add(egui::Spinner::new().size(11.0));
+                    if app.chart.radar_loading {
+                        ui.add(egui::Spinner::new().size(11.0));
+                    }
+                    match &app.chart.radar_frame {
+                        Some(f) => {
+                            ui.add(egui::Label::new(RichText::new(f.label()).size(11.0).color(t.text3)).truncate());
                         }
-                        ui.add(egui::Label::new(RichText::new(f.label()).size(11.0).color(t.text3)).truncate());
+                        None if app.saved.wx.radar => {
+                            ui.label(RichText::new("No official forecast this far out").size(11.0).color(t.text3));
+                        }
+                        None => {}
                     }
                 });
             });
@@ -143,9 +149,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
                 day = next;
             }
-            // HRRR's reach: beyond it the radar is model precipitation
-            let runs = &app.chart.runs;
-            let reach = runs.extended.map(|r| r + Duration::minutes(runs.extended_last)).or(runs.short.map(|r| r + Duration::hours(18))).unwrap_or_else(|| Utc::now() + Duration::hours(18));
+            // HRRR's reach: beyond it the picture is the WPC forecast chart
+            let reach = app.chart.runs.reach().unwrap_or_else(|| Utc::now() + Duration::hours(18));
             let hrrr = x_of(reach);
             p.line_segment([pos2(hrrr, track.top()), pos2(hrrr, track.bottom())], Stroke::new(1.0, t.text3.gamma_multiply(0.6)));
             // hover readout

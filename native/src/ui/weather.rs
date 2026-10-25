@@ -126,7 +126,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
         section(ui, &t, "On the chart");
         let radar_hint = match &app.chart.radar_frame {
             Some(f) => f.label(),
-            None => "Live NEXRAD now; HRRR forecast radar to 48 h and model precipitation to 5 days as you move the timeline".into(),
+            None => "Live NEXRAD now; as you move the timeline, HRRR forecast radar to about 48 h, then the WPC forecast chart (days 1-3) and WPC precipitation forecast (days 4-5)".into(),
         };
         widgets::toggle_line(ui, &t, &mut app.saved.wx.radar, "Radar", &radar_hint, Some(crate::wx::radar::dbz_color(30.0)));
         if app.saved.wx.radar {
@@ -145,6 +145,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
                 faint(ui, &t, "light → heavy");
             });
         }
+        widgets::toggle_line(ui, &t, &mut app.saved.wx.spc, "Convective outlook (SPC)", "The Storm Prediction Center's thunderstorm outlook for the timeline's day, days 1-8", Some(egui::Color32::from_rgb(0x55, 0xbb, 0x55)));
         widgets::toggle_line(ui, &t, &mut app.saved.wx.metars, "Flight category", "METAR dots: green VFR, blue MVFR, red IFR, purple LIFR", Some(theme::flt_cat("VFR")));
         widgets::toggle_line(ui, &t, &mut app.saved.wx.winds, "Winds aloft", "Wind barbs and temperatures at the level you pick, for the timeline's time (Windy point forecast with a key, Open-Meteo GFS otherwise)", Some(crate::ui::chart::speed_color(30.0)));
         if app.saved.wx.winds {
@@ -223,7 +224,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
                 let _ = open::that("https://www.1800wxbrief.com/");
             }
         });
-        widgets::para(ui, "Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet (NEXRAD, HRRR, NBM), Open-Meteo / Windy. Get an official briefing before flight.", t.text3, 10.5);
+        widgets::para(ui, "Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet (NEXRAD, HRRR, NBM), NOAA WPC and SPC, Open-Meteo / Windy (winds aloft). Get an official briefing before flight.", t.text3, 10.5);
     });
     if close {
         app.panel = Panel::None;

@@ -311,6 +311,8 @@ pub fn show(app: &mut App, ctx: &egui::Context, w: &mut Wizard) -> bool {
                 egui::Grid::new("wz-perf").num_columns(2).spacing(vec2(12.0, 6.0)).show(ui, |ui| {
                     for (i, (_, label, unit, hint)) in PERF.iter().enumerate() {
                         ui.vertical(|ui| {
+                            // a grid cell shrinks wrapping labels to nothing without a width
+                            ui.set_min_width(360.0);
                             ui.label(RichText::new(format!("{label} ({unit})")).size(12.5));
                             if !hint.is_empty() {
                                 ui.label(RichText::new(*hint).size(10.5).color(t.text3));

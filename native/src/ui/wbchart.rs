@@ -8,7 +8,7 @@ pub fn show(ui: &mut egui::Ui, t: &Tokens, ac: &Aircraft, wb: &WbResult, height:
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let p = ui.painter_at(rect);
-    let (l, r, top, b) = (44.0, 12.0, 10.0, 28.0);
+    let (l, r, top, b) = (44.0, 12.0, 10.0, 40.0);
     let mut pts: Vec<[f64; 2]> = ac.wb.envelope.clone();
     if let Some(u) = &ac.wb.utility {
         pts.extend(u.iter().copied());
@@ -75,8 +75,10 @@ pub fn show(ui: &mut egui::Ui, t: &Tokens, ac: &Aircraft, wb: &WbResult, height:
     let zf = pos2(x(wb.zero_fuel.cg), y(wb.zero_fuel.weight));
     let accent = t.accent;
     p.extend(Shape::dashed_line(&[to, ld], Stroke::new(1.8, accent), 4.0, 3.0));
-    for (pt, label) in [(to, "TO"), (ld, "LDG"), (zf, "ZF")] {
+    // takeoff and landing are often close: label one above, one below
+    let close = to.distance(ld) < 18.0;
+    for (pt, label, dy) in [(to, "TO", if close { -7.0 } else { 0.0 }), (ld, "LDG", if close { 7.0 } else { 0.0 }), (zf, "ZF", 0.0)] {
         p.circle(pt, 4.5, accent, Stroke::new(1.5, Color32::WHITE));
-        p.text(pt + vec2(7.0, 0.0), Align2::LEFT_CENTER, label, theme::bold(10.0), t.text2);
+        p.text(pt + vec2(7.0, dy), Align2::LEFT_CENTER, label, theme::bold(10.0), t.text2);
     }
 }

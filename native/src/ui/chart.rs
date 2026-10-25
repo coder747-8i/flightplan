@@ -33,7 +33,6 @@ pub struct ChartUi {
     /// recently shown radar layers, newest last (tiles of older ones are dropped)
     radar_layers: Vec<(String, i64)>,
     pub runs: crate::wx::radar::Runs,
-    pub model: crate::wx::radar::ModelGrid,
     /// what the radar layer is showing (for the timeline's label)
     pub radar_frame: Option<crate::wx::radar::Frame>,
     /// tiles of the current frame still loading
@@ -444,42 +443,40 @@ fn pirep_color(p: &Value) -> Color32 {
 }
 
 fn draw_radar(app: &mut App, painter: &Painter, proj: &Proj) {
-    if !app.saved.wx.radar {
-        app.chart.radar_frame = None;
-        return;
-    }
-    use crate::wx::radar::{frame_for, Kind as RadarKind};
-    app.chart.runs.update(&app.be);
-    let now = chrono::Utc::now();
-    let frame = frame_for(app.saved.route.departure_time(), now, &app.chart.runs);
-    let tint = Color32::from_white_alpha((app.saved.radar_opacity * 255.0) as u8);
     app.chart.radar_loading = false;
-    if frame.kind == RadarKind::Model {
-        let (w, s, e, n) = proj.bounds();
-        if let Some((tex, b)) = app.chart.model.update(&app.be, painter.ctx(), (w, s, e, n), proj.zoom, frame.valid) {
-            let r = Rect::from_min_max(proj.to_screen(b[0], b[3]), proj.to_screen(b[2], b[1]));
-            painter.image(tex, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+    let when = app.saved.route.departure_time();
+    if app.saved.wx.radar {
+        app.chart.runs.update(&app.be);
+        let frame = crate::wx::radar::frame_for(when, chrono::Utc::now(), &app.chart.runs, &app.outlooks);
+        if let Some(f) = &frame {
+            let tint = Color32::from_white_alpha((app.saved.radar_opacity * 255.0) as u8);
+            draw_frame(app, painter, proj, f, tint);
         }
-        app.chart.radar_loading = app.chart.model.loading;
-        if app.chart.model.loading {
-            painter.ctx().request_repaint_after(Duration::from_millis(300));
-        }
-        app.chart.radar_frame = Some(frame);
-        return;
+        app.chart.radar_frame = frame;
+    } else {
+        app.chart.radar_frame = None;
     }
-    let layer = frame.layer.clone().unwrap_or_default();
+    if app.saved.wx.spc {
+        if let Some(f) = crate::wx::radar::spc_frame(when, &app.outlooks) {
+            draw_frame(app, painter, proj, &f, Color32::from_white_alpha(200));
+        }
+    }
+}
+
+/// Draw one tiled weather product (fetched as published, cached per frame).
+fn draw_frame(app: &mut App, painter: &Painter, proj: &Proj, frame: &crate::wx::radar::Frame, tint: Color32) {
+    let layer = frame.layer.clone();
     let stamp = frame.valid.timestamp();
-    if app.chart.radar_layers.last() != Some(&(layer.clone(), stamp)) {
-        app.chart.radar_layers.retain(|l| l != &(layer.clone(), stamp));
+    if !app.chart.radar_layers.contains(&(layer.clone(), stamp)) {
         app.chart.radar_layers.push((layer.clone(), stamp));
         // keep a few frames so scrubbing back and forth doesn't refetch
-        if app.chart.radar_layers.len() > 8 {
+        if app.chart.radar_layers.len() > 10 {
             app.chart.radar_layers.remove(0);
         }
         let keep = app.chart.radar_layers.clone();
         app.chart.radar.retain(|k, _| keep.iter().any(|l| l.0 == k.0 && l.1 == k.1));
     }
-    // HRRR tiles exist to zoom 8 on IEM's cache; NEXRAD to 8 as well
+    // IEM's caches go to zoom 8; NOAA's exports render any size, but a zoom-9 grid is plenty
     let z = (proj.zoom.floor() as i32).clamp(3, 8) as u8;
     let n = 1u32 << z;
     let tl = proj.screen_to_world(proj.rect.left_top());
@@ -489,10 +486,15 @@ fn draw_radar(app: &mut App, painter: &Painter, proj: &Proj) {
             let key = (layer.clone(), stamp, z, x, y);
             if !app.chart.radar.contains_key(&key) {
                 let http = app.be.http.clone();
-                let url = frame.tile_url(z, x, y).unwrap_or_default();
+                let url = frame.tile_url(z, x, y);
                 let task = app.be.spawn(async move {
                     let b = http.get(url).send().await.ok()?.error_for_status().ok()?.bytes().await.ok()?;
                     let img = image::load_from_memory(&b).ok()?.to_rgba8();
+                    // an opaque single-colour tile is a server placeholder, not weather
+                    let first = img.pixels().next().copied()?;
+                    if first[3] == 255 && img.pixels().step_by(97).all(|p| *p == first) {
+                        return None;
+                    }
                     Some(egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()))
                 });
                 app.chart.radar.insert(key.clone(), RadarTile::Loading(task));
@@ -501,7 +503,7 @@ fn draw_radar(app: &mut App, painter: &Painter, proj: &Proj) {
             if let RadarTile::Loading(t) = entry {
                 if let Some(img) = t.poll() {
                     *entry = match img {
-                        Some(img) => RadarTile::Ready(painter.ctx().load_texture(format!("radar-{}-{z}-{x}-{y}", key.0), img, egui::TextureOptions::LINEAR)),
+                        Some(img) => RadarTile::Ready(painter.ctx().load_texture(format!("wx-{}-{z}-{x}-{y}", key.0), img, egui::TextureOptions::LINEAR)),
                         None => RadarTile::Missing,
                     };
                 }
@@ -517,7 +519,6 @@ fn draw_radar(app: &mut App, painter: &Painter, proj: &Proj) {
             }
         }
     }
-    app.chart.radar_frame = Some(frame);
 }
 
 fn draw_advisories(app: &App, painter: &Painter, proj: &Proj) {

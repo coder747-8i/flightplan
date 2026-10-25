@@ -1,12 +1,11 @@
 //! Airport conditions at a planned time, up to about five days out: the METAR within the next
 //! hour, the TAF while it is valid, then the National Blend of Models text guidance (via the
 //! Iowa Environmental Mesonet API: NBS is 3-hourly with ceiling and visibility to 72 h, NBE is
-//! 12-hourly wind / sky / precipitation / thunder to ~10 days). Plus model weather sampled along
-//! the route (Open-Meteo), which covers the en-route part and the days no TAF reaches.
+//! 12-hourly wind / sky / precipitation / thunder to ~10 days). En route, the official WPC and
+//! SPC products the route crosses (wx/official.rs).
 
 use crate::backend::{Backend, Task};
 use crate::model::place::{Kind, Waypoint};
-use crate::nav::geo::{distance_nm, point_along};
 use crate::wx::decode::str_of;
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::Value;
@@ -391,199 +390,54 @@ async fn fetch_station(st: std::sync::Arc<flightplan_server::AppState>, airport:
     }
     out.metar = find(&metars, &out.station);
     out.taf = find(&tafs, &out.station);
-    let ttl = Duration::from_secs(3600);
-    for (model, slot) in [("NBS", 0), ("NBE", 1)] {
-        // NBM covers far more sites than report METARs; try the chosen station, then the rest
-        for (id, d) in std::iter::once((out.station.clone(), out.offset_nm)).chain(candidates.iter().take(5).cloned()) {
-            let url = format!("https://mesonet.agron.iastate.edu/api/1/mos.json?station={id}&model={model}");
-            let rows = match st.cache.get_json(&url, ttl).await {
-                Ok(v) => parse_nbm(&v),
-                Err(_) => vec![],
-            };
-            if !rows.is_empty() {
-                if slot == 0 {
-                    out.nbs = rows;
-                } else {
-                    out.nbe = rows;
+    // NBS and NBE in parallel; NBM covers far more sites than report METARs, so try the chosen
+    // station, then the other candidates
+    let tries: Vec<(String, f64)> = std::iter::once((out.station.clone(), out.offset_nm)).chain(candidates.iter().take(5).cloned()).collect();
+    let nbm = |model: &'static str| {
+        let st = st.clone();
+        let tries = tries.clone();
+        async move {
+            for (id, d) in tries {
+                let url = format!("https://mesonet.agron.iastate.edu/api/1/mos.json?station={id}&model={model}");
+                if let Ok(v) = st.cache.get_json(&url, Duration::from_secs(3600)).await {
+                    let rows = parse_nbm(&v);
+                    if !rows.is_empty() {
+                        return Some((id, d, rows));
+                    }
                 }
-                if out.metar.is_none() && out.taf.is_none() {
-                    out.station = id;
-                    out.offset_nm = d;
-                }
-                break;
+            }
+            None
+        }
+    };
+    let (nbs, nbe) = tokio::join!(nbm("NBS"), nbm("NBE"));
+    for (i, r) in [nbs, nbe].into_iter().enumerate() {
+        if let Some((id, d, rows)) = r {
+            if out.metar.is_none() && out.taf.is_none() {
+                out.station = id;
+                out.offset_nm = d;
+            }
+            if i == 0 {
+                out.nbs = rows;
+            } else {
+                out.nbe = rows;
             }
         }
     }
     out
 }
 
-/// Model weather at one route sample (Open-Meteo, hourly).
-#[derive(Clone, Debug, Default)]
-pub struct ModelPoint {
-    pub d: f64,
-    pub lat: f64,
-    pub lon: f64,
-    pub t: Vec<i64>,
-    pub precip: Vec<f64>,
-    pub code: Vec<i64>,
-    pub cloud_low: Vec<f64>,
-    pub freezing_ft: Vec<f64>,
-    pub vis_sm: Vec<f64>,
-    pub gust: Vec<f64>,
-    pub cape: Vec<f64>,
-}
-
-impl ModelPoint {
-    fn idx(&self, when: i64) -> Option<usize> {
-        let i = self.t.iter().enumerate().min_by_key(|(_, t)| (**t - when).abs())?.0;
-        ((self.t[i] - when).abs() <= 5400).then_some(i)
-    }
-}
-
-/// What the model expects along the route at the times you'd pass each point.
-#[derive(Clone, Debug, Default)]
-pub struct EnRoute {
-    /// worst WMO weather code: (code, along-track NM)
-    pub worst_code: Option<(i64, f64)>,
-    /// heaviest precipitation mm/h and where
-    pub max_precip: Option<(f64, f64)>,
-    pub max_cape: Option<(f64, f64)>,
-    /// lowest freezing level (ft MSL) where there's precipitation or low cloud, and where
-    pub icing: Option<(f64, f64)>,
-    /// worst visibility (SM) and where
-    pub min_vis: Option<(f64, f64)>,
-    /// how many samples are under 1 SM
-    pub vis_under_1: usize,
-    /// mostly low overcast points (fraction of samples with >= 85% low cloud)
-    pub low_cloud_frac: f64,
-}
-
-pub fn wmo_text(code: i64) -> &'static str {
-    match code {
-        0..=3 => "no significant weather",
-        45 | 48 => "fog",
-        51..=57 => "drizzle",
-        61 | 63 => "rain",
-        65 => "heavy rain",
-        66 | 67 => "freezing rain",
-        71..=77 => "snow",
-        80..=82 => "rain showers",
-        85 | 86 => "snow showers",
-        95 => "thunderstorms",
-        96 | 99 => "thunderstorms with hail",
-        _ => "weather",
-    }
-}
-
-/// Severity rank of a WMO code for "worst along the route".
-fn code_rank(c: i64) -> i64 {
-    match c {
-        95..=99 => 100 + c,
-        66 | 67 | 56 | 57 => 90,
-        65 | 82 | 75 | 86 => 80,
-        71..=77 | 85 => 70,
-        45 | 48 => 60,
-        61..=64 | 80 | 81 => 50,
-        51..=55 => 40,
-        _ => c.min(3),
-    }
-}
-
-/// Summarise model weather along the route. `eta(d)` gives the unix time you pass along-track NM `d`.
-pub fn en_route(points: &[ModelPoint], cruise_ft: f64, eta: impl Fn(f64) -> i64) -> EnRoute {
-    let mut e = EnRoute::default();
-    let mut low = 0usize;
-    let mut n = 0usize;
-    for p in points {
-        let Some(i) = p.idx(eta(p.d)) else { continue };
-        n += 1;
-        if let Some(&c) = p.code.get(i) {
-            if e.worst_code.is_none_or(|(w, _)| code_rank(c) > code_rank(w)) {
-                e.worst_code = Some((c, p.d));
-            }
-        }
-        if let Some(&r) = p.precip.get(i) {
-            if r > 0.0 && e.max_precip.is_none_or(|(m, _)| r > m) {
-                e.max_precip = Some((r, p.d));
-            }
-        }
-        if let Some(&c) = p.cape.get(i) {
-            if e.max_cape.is_none_or(|(m, _)| c > m) {
-                e.max_cape = Some((c, p.d));
-            }
-        }
-        let wet = p.precip.get(i).is_some_and(|r| *r >= 0.1) || p.cloud_low.get(i).is_some_and(|c| *c >= 70.0);
-        if let Some(&fz) = p.freezing_ft.get(i) {
-            if wet && fz < cruise_ft + 1000.0 && e.icing.is_none_or(|(m, _)| fz < m) {
-                e.icing = Some((fz, p.d));
-            }
-        }
-        if let Some(&v) = p.vis_sm.get(i) {
-            if e.min_vis.is_none_or(|(m, _)| v < m) {
-                e.min_vis = Some((v, p.d));
-            }
-            if v < 1.0 {
-                e.vis_under_1 += 1;
-            }
-        }
-        if p.cloud_low.get(i).is_some_and(|c| *c >= 85.0) {
-            low += 1;
-        }
-    }
-    e.low_cloud_frac = if n > 0 { low as f64 / n as f64 } else { 0.0 };
-    e
-}
-
-async fn fetch_model(st: std::sync::Arc<flightplan_server::AppState>, samples: Vec<(f64, f64, f64)>) -> Vec<ModelPoint> {
-    if samples.is_empty() {
-        return vec![];
-    }
-    let lats: Vec<String> = samples.iter().map(|s| format!("{:.2}", s.1)).collect();
-    let lons: Vec<String> = samples.iter().map(|s| format!("{:.2}", s.2)).collect();
-    let url = format!(
-        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&hourly=precipitation,weather_code,cloud_cover_low,freezing_level_height,visibility,wind_gusts_10m,cape&wind_speed_unit=kn&forecast_days=7&timeformat=unixtime",
-        lats.join(","),
-        lons.join(",")
-    );
-    let Ok(v) = st.cache.get_json(&url, Duration::from_secs(3600)).await else { return vec![] };
-    let list: Vec<Value> = match v {
-        Value::Array(a) => a,
-        o => vec![o],
-    };
-    let f = |h: &Value, k: &str| -> Vec<f64> { h[k].as_array().map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect()).unwrap_or_default() };
-    samples
-        .iter()
-        .zip(list.iter())
-        .map(|(s, o)| {
-            let h = &o["hourly"];
-            ModelPoint {
-                d: s.0,
-                lat: s.1,
-                lon: s.2,
-                t: h["time"].as_array().map(|a| a.iter().filter_map(|x| x.as_i64()).collect()).unwrap_or_default(),
-                precip: f(h, "precipitation"),
-                code: h["weather_code"].as_array().map(|a| a.iter().map(|x| x.as_i64().unwrap_or(0)).collect()).unwrap_or_default(),
-                cloud_low: f(h, "cloud_cover_low"),
-                freezing_ft: f(h, "freezing_level_height").into_iter().map(|m| m * 3.28084).collect(),
-                vis_sm: f(h, "visibility").into_iter().map(|m| m / 1609.34).collect(),
-                gust: f(h, "wind_gusts_10m"),
-                cape: f(h, "cape"),
-            }
-        })
-        .collect()
-}
-
-/// Departure / destination forecasts and en-route model weather for the active route,
-/// refreshed when the route's airports change and every 30 minutes.
+/// Departure / destination forecasts and the official outlooks the route crosses, refreshed
+/// when the route changes and every 30 minutes.
 #[derive(Default)]
 pub struct RouteForecast {
     key: String,
     at: Option<Instant>,
     stations_task: Task<Vec<StationWx>>,
-    model_task: Task<Vec<ModelPoint>>,
+    official_task: Task<Vec<super::official::Hit>>,
     pub dep: Option<StationWx>,
     pub dest: Option<StationWx>,
-    pub model: Vec<ModelPoint>,
+    /// WPC forecast chart and SPC outlook areas the route crosses, all days
+    pub official: Vec<super::official::Hit>,
     pub loading: bool,
     /// bumped when new data arrives
     pub generation: u64,
@@ -594,13 +448,13 @@ impl RouteForecast {
         let ends: Vec<&Waypoint> = [waypoints.first(), waypoints.last()].into_iter().flatten().collect();
         let key = waypoints.iter().map(|w| format!("{}{:.3}{:.3}", w.id, w.lat, w.lon)).collect::<Vec<_>>().join(" ");
         let stale = self.at.is_none_or(|t| t.elapsed() > Duration::from_secs(1800));
-        if (key != self.key || stale) && !self.stations_task.pending() && !self.model_task.pending() {
+        if (key != self.key || stale) && !self.stations_task.pending() && !self.official_task.pending() {
             self.key = key;
             self.at = Some(Instant::now());
             if waypoints.len() < 2 {
                 self.dep = None;
                 self.dest = None;
-                self.model.clear();
+                self.official.clear();
                 self.generation += 1;
                 return;
             }
@@ -608,34 +462,36 @@ impl RouteForecast {
             let st = be.server.clone();
             let ends: Vec<(String, String, f64, f64, bool)> = ends.iter().map(|w| (w.id.clone(), w.wx_id(), w.lat, w.lon, w.kind == Kind::Airport)).collect();
             self.stations_task = be.spawn(async move {
-                let mut out = Vec::new();
-                for (id, icao, lat, lon, is_apt) in ends {
-                    out.push(if is_apt { fetch_station(st.clone(), id, icao, lat, lon).await } else { StationWx { airport: id, ..Default::default() } });
+                // departure and destination at the same time
+                let one = |e: (String, String, f64, f64, bool)| {
+                    let st = st.clone();
+                    async move {
+                        let (id, icao, lat, lon, is_apt) = e;
+                        if is_apt { fetch_station(st, id, icao, lat, lon).await } else { StationWx { airport: id, ..Default::default() } }
+                    }
+                };
+                let mut it = ends.into_iter();
+                match (it.next(), it.next()) {
+                    (Some(a), Some(b)) => {
+                        let (a, b) = tokio::join!(one(a), one(b));
+                        vec![a, b]
+                    }
+                    (Some(a), None) => vec![one(a).await],
+                    _ => vec![],
                 }
-                out
             });
-            // model samples: ends plus points every ~25 NM, at most 16
             let path: Vec<[f64; 2]> = waypoints.iter().map(|w| [w.lon, w.lat]).collect();
-            let total: f64 = waypoints.windows(2).map(|w| distance_nm(w[0].lat, w[0].lon, w[1].lat, w[1].lon)).sum();
-            let n = ((total / 25.0).ceil() as usize).clamp(1, 15);
-            let samples: Vec<(f64, f64, f64)> = (0..=n)
-                .map(|i| {
-                    let d = total * i as f64 / n as f64;
-                    let p = point_along(&path, d);
-                    (d, p[1], p[0])
-                })
-                .collect();
             let st = be.server.clone();
-            self.model_task = be.spawn(fetch_model(st, samples));
+            self.official_task = be.spawn(super::official::along_route(st, path));
         }
         if let Some(mut list) = self.stations_task.poll() {
             self.dest = if list.len() > 1 { list.pop() } else { None };
             self.dep = list.pop();
             self.generation += 1;
-            self.loading = self.model_task.pending();
+            self.loading = self.official_task.pending();
         }
-        if let Some(m) = self.model_task.poll() {
-            self.model = m;
+        if let Some(h) = self.official_task.poll() {
+            self.official = h;
             self.generation += 1;
             self.loading = self.stations_task.pending();
         }
@@ -710,12 +566,4 @@ mod tests {
         assert_eq!(first.category(), Some("VFR"));
     }
 
-    #[test]
-    fn en_route_summary() {
-        let p = ModelPoint { d: 10.0, t: vec![0, 3600], precip: vec![0.0, 2.0], code: vec![1, 95], cloud_low: vec![0.0, 90.0], freezing_ft: vec![12000.0, 6000.0], vis_sm: vec![10.0, 3.0], gust: vec![5.0, 30.0], cape: vec![0.0, 900.0], ..Default::default() };
-        let e = en_route(&[p], 7500.0, |_| 3600);
-        assert_eq!(e.worst_code, Some((95, 10.0)));
-        assert_eq!(e.icing.map(|i| i.0), Some(6000.0));
-        assert_eq!(e.low_cloud_frac, 1.0);
-    }
 }

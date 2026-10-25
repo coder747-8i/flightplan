@@ -2,13 +2,15 @@
 //! the reasons. It rolls up the hazard advisor (terrain, obstacles, airspace, TFRs, advisories,
 //! fuel, weight & balance, daylight), the departure and destination weather at ETD / ETA
 //! against the pilot's personal minimums (ceiling, visibility, wind, gusts, crosswind, thunder,
-//! density altitude), model weather along the route and winds aloft.
+//! density altitude), the official WPC forecast chart and SPC convective outlooks the route
+//! crosses on the day you fly, and winds aloft.
 //! Advisory only: the pilot in command makes the call.
 
 use super::hazards::Hazard;
 use super::navlog::{thousands, NavLog};
 use super::profile::Level;
-use crate::wx::forecast::{wmo_text, Conditions, EnRoute, Source};
+use crate::wx::forecast::{Conditions, Source};
+use crate::wx::official::Hit;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -109,7 +111,10 @@ pub struct End<'a> {
 pub struct Input<'a> {
     pub hazards: &'a [Hazard],
     pub ends: Vec<End<'a>>,
-    pub en_route: Option<&'a EnRoute>,
+    /// official outlook areas the route crosses on the days of the flight
+    pub official: Vec<&'a Hit>,
+    /// false while the official products are still loading
+    pub official_known: bool,
     pub log: Option<&'a NavLog>,
     pub cruise_ft: f64,
     /// highest terrain along the route (ft)
@@ -266,41 +271,25 @@ fn end_checks(e: &End, m: &Minimums, max_xwind: f64, out: &mut Vec<Factor>) {
     }
 }
 
-fn en_route_checks(e: &EnRoute, cruise: f64, out: &mut Vec<Factor>) {
+fn official_checks(hits: &[&Hit], out: &mut Vec<Factor>) {
     let mut any = false;
-    let mut push = |out: &mut Vec<Factor>, call: Call, title: String, detail: String, at: f64| {
+    for h in hits {
+        let what = h.label.as_str();
+        let (call, title) = match (h.product, what) {
+            ("SPC convective outlook", "TSTM") => (Call::Caution, format!("Thunderstorms possible along the route (SPC day {})", h.day)),
+            ("SPC convective outlook", l) if h.day >= 4 => (if l.starts_with("15") { Call::Caution } else { Call::NoGo }, format!("SPC day {} outlook: {l} along the route", h.day)),
+            ("SPC convective outlook", _) => (Call::NoGo, format!("SPC {} along the route (day {})", if h.detail.is_empty() { what.to_string() } else { h.detail.clone() }, h.day)),
+            (_, w) if w.contains("Severe") || w.contains("Freezing Rain") || w.contains("Heavy Snow") => (Call::NoGo, format!("WPC: {} along the route (day {})", w.to_lowercase(), h.day)),
+            (_, w) if w.contains("Thunderstorm") || w.contains("Snow") || w.contains("Mixed") || w.contains("Heavy Rain") => (Call::Caution, format!("WPC: {} area along the route (day {})", w.to_lowercase(), h.day)),
+            (_, w) if w == "Rain" => (Call::Caution, format!("WPC: rain area along the route (day {})", h.day)),
+            _ => continue,
+        };
         any = true;
-        out.push(f(call, "En route", title, detail, Some(at)));
-    };
-    if let Some((code, d)) = e.worst_code {
-        match code {
-            95..=99 => push(out, Call::NoGo, format!("Model forecasts {} along the route", wmo_text(code)), format!("Near {d:.0} NM at the time you'd pass. Plan around them or change the time."), d),
-            66 | 67 | 56 | 57 => push(out, Call::NoGo, format!("Model forecasts {} along the route", wmo_text(code)), format!("Near {d:.0} NM."), d),
-            65 | 82 | 75 | 86 => push(out, Call::Caution, format!("Model forecasts {} along the route", wmo_text(code)), format!("Near {d:.0} NM."), d),
-            _ => {}
-        }
-    }
-    if let Some((cape, d)) = e.max_cape {
-        if cape >= 1500.0 && !e.worst_code.is_some_and(|c| c.0 >= 95) {
-            push(out, Call::Caution, "Unstable air along the route".into(), format!("CAPE {} J/kg near {d:.0} NM: afternoon build-ups and convection are possible.", cape.round()), d);
-        }
-    }
-    if let Some((fz, d)) = e.icing {
-        let call = if fz < cruise - 2000.0 { Call::NoGo } else { Call::Caution };
-        push(out, call, format!("Freezing level {} ft with moisture", thousands((fz / 100.0).round() * 100.0)), format!("At your {} ft cruise near {d:.0} NM there's cloud or precipitation at or above the freezing level: icing is possible.", thousands(cruise)), d);
-    }
-    if let Some((v, d)) = e.min_vis {
-        if v < 1.0 && e.vis_under_1 >= 2 {
-            push(out, Call::NoGo, "Visibility under 1 SM along the route".to_string(), format!("Model visibility {v:.1} SM near {d:.0} NM, and under 1 SM at {} points.", e.vis_under_1), d);
-        } else if v < 3.0 {
-            push(out, Call::Caution, format!("Low visibility along the route"), format!("Model visibility {v:.1} SM near {d:.0} NM."), d);
-        }
-    }
-    if e.low_cloud_frac >= 0.5 {
-        push(out, Call::Caution, "Low cloud along much of the route".into(), format!("The model has 85%+ low cloud cover over {}% of the route.", (e.low_cloud_frac * 100.0).round()), 0.0);
+        let detail = format!("{} for the day you fly. Check the product and the TAFs closer to departure.", h.product);
+        out.push(f(call, "En route", title, if h.product.starts_with("SPC") && !h.detail.is_empty() && h.day < 4 { format!("{}: {}", h.detail, detail) } else { detail }, None));
     }
     if !any {
-        out.push(f(Call::Go, "En route", "No significant weather along the route", "Model precipitation, thunder, icing and visibility checked at the times you'd pass.", None));
+        out.push(f(Call::Go, "En route", "No forecast weather areas along the route", "WPC forecast chart and SPC convective outlook for the day you fly.", None));
     }
 }
 
@@ -315,8 +304,8 @@ pub fn evaluate(i: &Input) -> Verdict {
     for e in &i.ends {
         end_checks(e, m, i.max_xwind, &mut out);
     }
-    if let Some(e) = i.en_route {
-        en_route_checks(e, i.cruise_ft, &mut out);
+    if i.official_known {
+        official_checks(&i.official, &mut out);
     }
     // winds aloft: strong flow over high terrain means turbulence / mountain wave
     if let Some(log) = i.log {
@@ -395,7 +384,8 @@ mod tests {
         evaluate(&Input {
             hazards: &[],
             ends: vec![End { role: "Departure", airport: "KAAA", is_airport: true, cond: Some(c), runways: &rw, elev: 1000.0, offset_nm: 0.0, when: now }],
-            en_route: None,
+            official: vec![],
+            official_known: false,
             log: None,
             cruise_ft: 6500.0,
             max_terrain_ft: 2000.0,

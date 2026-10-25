@@ -34,8 +34,11 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
   (**go / no-go**: green/yellow/red against `Minimums`), `magvar` (WMM) and `sun`.
 - `wx/`: `state.rs` (advisories, METAR / PIREP dots, wind grid), `decode.rs` (METAR / TAF /
   PIREP / SIGMET to plain English), `forecast.rs` (conditions at a time: METAR, then TAF, then
-  NBM via IEM; Open-Meteo model weather along the route) and `radar.rs` (radar frame for a time:
-  NEXRAD, then HRRR tiles, then the model-precip lattice).
+  NBM via IEM), `official.rs` (WPC forecast chart / QPF and SPC outlooks from NOAA's map
+  service: day boundaries, tile export URLs, what the route crosses) and `radar.rs` (the frame
+  for a time: NEXRAD, then HRRR tiles, then WPC chart days 1-3, then WPC QPF days 4-5).
+  **Rule from the owner: never synthesize forecasts. Show and read official products as
+  published.**
 - `map/`: the chart renderer. It reads PMTiles v3 (`pmtiles.rs`) and MVT (`mvt.rs`), renders
   tiles with tiny-skia (`render.rs`, `style.rs`), loads and caches tiles (`tiles.rs`), and draws
   symbols and labels with collision (`view.rs`, `symbols.rs`, `icons.rs`).
@@ -53,7 +56,7 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
 
 The route changes, so `route.rev` bumps. `Plan::update` waits 250 ms, then fetches the profile
 (terrain, obstacles, airspace) and winds, and `RouteForecast` fetches the end stations (METAR /
-TAF / NBS / NBE) and the model points. When the inputs hash changes, it recomputes the navlog,
+TAF / NBS / NBE) and the WPC / SPC areas the route crosses (`official::along_route`). When the inputs hash changes, it recomputes the navlog,
 hazards and `verdict::evaluate`. It also scores departures every 3 h for 5 days into
 `plan.windows`, which the timeline draws. The departure time is `route.departure` (local
 "YYYY-MM-DDTHH:MM", empty = now). The timeline writes it with `timeline::set_departure`.
@@ -67,8 +70,11 @@ hazards and `verdict::evaluate`. It also scores departures every 3 h for 5 days 
   extended-run tiles often stop before 48 h, so the app probes the last hour served. NBM text
   guidance comes from `/api/1/mos.json?station=K...&model=NBS|NBE`. NBS cig is in hundreds of
   ft (-88 = unlimited), vis in tenths of SM.
-- Open-Meteo: winds aloft (`/v1/gfs`, 6 days) and multi-location forecasts (comma-separated
-  lat/lon; each location counts as one call against the free limit).
+- NOAA map services (`mapservices.weather.noaa.gov/vector/rest/services`):
+  `outlooks/natl_fcst_wx_chart` (WPC chart, layers per day), `precip/wpc_qpf` and
+  `outlooks/SPC_wx_outlks`. Use `MapServer/export` for tiles (bbox in EPSG:3857) and
+  `MapServer/identify` with a polyline for what the route crosses.
+- Open-Meteo: winds aloft only (`/v1/gfs`, 6 days).
 - OpenFreeMap basemap, Terrarium DEM (S3) and Windy (optional key).
 
 ## Testing

@@ -71,7 +71,7 @@ const SLIDES: [Slide; 6] = [
         icon: ph::CLOUD_SUN,
         title: "Weather and go / no-go",
         points: [
-            "Drag the timeline under the chart to plan up to five days ahead: radar turns into forecast radar and winds, TAFs and model forecasts follow.",
+            "Drag the timeline under the chart to plan up to five days ahead: live radar becomes HRRR forecast radar, then the official WPC forecast charts; winds and TAFs follow.",
             "With a route, you get a green, yellow or red call for that time against your personal minimums, with the reasons.",
             "The timeline shows the call for every 3 hours, so the green stretches are your windows to fly.",
         ],

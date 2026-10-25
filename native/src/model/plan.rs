@@ -11,7 +11,7 @@ use crate::nav::hazards::{self, Hazard};
 use crate::nav::navlog::{self, NavLog, WindPoint};
 use crate::nav::profile::{self, Incursion, Profile, TerrainConflict};
 use crate::nav::verdict::{self, Minimums, Verdict};
-use crate::wx::forecast::{self, RouteForecast};
+use crate::wx::forecast::RouteForecast;
 use crate::wx::state::Wx;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -101,7 +101,8 @@ impl Plan {
         profile::alt_at(&self.alt_path, d)
     }
 
-    pub fn update(&mut self, be: &Backend, route: &Route, ac: Option<&Aircraft>, wx: &Wx, minimums: &Minimums, data_expired: bool) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, be: &Backend, route: &Route, ac: Option<&Aircraft>, wx: &Wx, outlooks: &crate::wx::official::Outlooks, minimums: &Minimums, data_expired: bool) {
         self.forecast.update(be, &route.waypoints);
         // ---- refetch geometry-dependent data, debounced ----
         if route.rev != self.fetched_rev {
@@ -159,7 +160,7 @@ impl Plan {
         // ---- derived, recomputed when any input changes ----
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (route.rev, route.cruise.to_bits(), self.generation, wx.generation, self.forecast.generation, data_expired).hash(&mut h);
-        format!("{minimums:?}").hash(&mut h);
+        format!("{minimums:?}{:?}{:?}", outlooks.wpc_day1_end, outlooks.spc_day1_end).hash(&mut h);
         if let Some(a) = ac {
             format!("{a:?}").hash(&mut h);
         }
@@ -198,7 +199,7 @@ impl Plan {
             self.conflicts = profile::terrain_conflicts(&self.profile, &self.alt_path);
             self.incursions = profile::incursions(&self.profile, &self.alt_path);
             self.hazards = hazards;
-            self.verdict = ready.then(|| self.judge(route, ac, &log, &self.hazards, departure, minimums, data_expired));
+            self.verdict = ready.then(|| self.judge(route, ac, &log, &self.hazards, departure, outlooks, minimums, data_expired));
             self.log = Some(log);
             if !ready {
                 // look again next frame
@@ -214,7 +215,7 @@ impl Plan {
                 .filter_map(|i| {
                     let t = chrono::DateTime::from_timestamp(start + i * 3 * 3600, 0)?;
                     let (log, _, hazards) = self.analyze_at(route, ac, wx, t);
-                    let v = self.judge(route, ac, &log, &hazards, t, minimums, data_expired);
+                    let v = self.judge(route, ac, &log, &hazards, t, outlooks, minimums, data_expired);
                     Some((t.timestamp(), v.call))
                 })
                 .collect();
@@ -254,9 +255,8 @@ impl Plan {
 
     /// The go / no-go call for the plan at a departure time.
     #[allow(clippy::too_many_arguments)]
-    fn judge(&self, route: &Route, ac: &Aircraft, log: &NavLog, hazards: &[Hazard], departure: chrono::DateTime<chrono::Utc>, minimums: &Minimums, data_expired: bool) -> Verdict {
+    fn judge(&self, route: &Route, ac: &Aircraft, log: &NavLog, hazards: &[Hazard], departure: chrono::DateTime<chrono::Utc>, outlooks: &crate::wx::official::Outlooks, minimums: &Minimums, data_expired: bool) -> Verdict {
         let eta = departure + chrono::Duration::milliseconds((log.total_time * 60_000.0) as i64);
-        let total = log.total_dist.max(1.0);
         let fc = &self.forecast;
         let dep_c = fc.dep.as_ref().and_then(|s| s.at(departure));
         let dest_c = fc.dest.as_ref().and_then(|s| s.at(eta));
@@ -278,13 +278,20 @@ impl Plan {
                 when,
             });
         }
-        let dep_ts = departure.timestamp();
-        let en_route = (!fc.model.is_empty()).then(|| forecast::en_route(&fc.model, route.cruise, |d| dep_ts + (log.total_time * 60.0 * d / total) as i64));
+        // the official outlook days the flight spans
+        let (spc_a, spc_b) = (outlooks.spc_day(departure), outlooks.spc_day(eta));
+        let (wpc_a, wpc_b) = (outlooks.wpc_day(departure), outlooks.wpc_day(eta));
+        let official: Vec<&crate::wx::official::Hit> = fc
+            .official
+            .iter()
+            .filter(|h| if h.product.starts_with("SPC") { (spc_a..=spc_b).contains(&h.day) } else { (wpc_a..=wpc_b).contains(&h.day) })
+            .collect();
         let max_terrain = self.profile.samples.iter().map(|s| s.max).fold(0.0, f64::max);
         verdict::evaluate(&verdict::Input {
             hazards,
             ends,
-            en_route: en_route.as_ref(),
+            official,
+            official_known: !fc.loading,
             log: Some(log),
             cruise_ft: route.cruise,
             max_terrain_ft: max_terrain,

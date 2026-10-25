@@ -15,6 +15,9 @@ pub struct Search {
     results: Vec<Place>,
     active: usize,
     focus: bool,
+    /// the results list stays open after the field loses focus (Enter or a click on a result
+    /// both take focus away) until a pick, Escape or a click elsewhere
+    open: bool,
 }
 
 pub fn pick(app: &mut App, p: &Place, add: bool) {
@@ -55,7 +58,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             .inner
         });
         mark(ctx, "search", box_resp.response.rect);
-        let (focused, _) = box_resp.inner;
+        let (focused, lost) = box_resp.inner;
+        // a single-line field drops focus on the frame Enter is pressed
+        let submitted = lost && ui.input(|i| i.key_pressed(Key::Enter));
+        if focused {
+            app.search.open = true;
+        }
         let q = app.search.q.trim().to_string();
         if q != app.search.last {
             app.search.last = q.clone();
@@ -66,7 +74,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 vec![]
             };
         }
-        if focused && !app.search.results.is_empty() {
+        if submitted && app.search.results.is_empty() && q.len() >= 2 {
+            app.toast(format!("Nothing found for \"{q}\""));
+        }
+        if app.search.open && !app.search.results.is_empty() {
             let n = app.search.results.len();
             if ui.input(|i| i.key_pressed(Key::ArrowDown)) {
                 app.search.active = (app.search.active + 1).min(n - 1);
@@ -74,14 +85,14 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if ui.input(|i| i.key_pressed(Key::ArrowUp)) {
                 app.search.active = app.search.active.saturating_sub(1);
             }
-            let enter = ui.input(|i| i.key_pressed(Key::Enter));
+            let enter = submitted || (focused && ui.input(|i| i.key_pressed(Key::Enter)));
             let shift = ui.input(|i| i.modifiers.shift);
             let mut chosen: Option<(Place, bool)> = None;
             if enter {
                 chosen = Some((app.search.results[app.search.active].clone(), shift));
             }
             ui.add_space(6.0);
-            glass(&t).inner_margin(Margin::same(4)).show(ui, |ui| {
+            let list = glass(&t).inner_margin(Margin::same(4)).show(ui, |ui| {
                 ui.set_width(width - 8.0);
                 for (i, r) in app.search.results.iter().enumerate().take(12) {
                     let icon = match r.kind {
@@ -89,8 +100,6 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         Kind::Navaid => ph::BROADCAST,
                         _ => ph::TRIANGLE,
                     };
-                    let text = egui::text::LayoutJob::simple_singleline(String::new(), theme::regular(1.0), t.text);
-                    let _ = text;
                     let resp = ui.add(
                         egui::Button::new(RichText::new(format!("{icon}  {}   {}   {}", r.id, r.name, r.detail)).size(12.5))
                             .fill(if i == app.search.active { t.surface2 } else { egui::Color32::TRANSPARENT })
@@ -106,16 +115,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
                 ui.label(RichText::new("Enter to open · Shift+Enter to add to the route").size(10.5).color(t.text3));
             });
+            // a click anywhere else closes the list
+            let pressed_elsewhere = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !list.response.rect.contains(p) && !box_resp.response.rect.contains(p)));
+            if pressed_elsewhere {
+                app.search.open = false;
+            }
             if let Some((p, add)) = chosen {
                 app.search.q.clear();
                 app.search.last.clear();
                 app.search.results.clear();
+                app.search.open = false;
                 ui.memory_mut(|m| m.surrender_focus(ui.id()));
                 pick(app, &p, add);
             }
         }
         if ui.input(|i| i.key_pressed(Key::Escape)) {
             app.search.q.clear();
+            app.search.open = false;
         }
     });
     let _ = Align2::CENTER_TOP;

@@ -236,6 +236,7 @@ pub fn card(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, desc: &str, width:
         })
         .response;
     let resp = resp.interact(Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
     if resp.hovered() {
         ui.painter().rect_stroke(resp.rect, CornerRadius::same(11), Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
     }

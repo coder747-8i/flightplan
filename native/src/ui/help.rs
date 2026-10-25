@@ -22,7 +22,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
         section(ui, &t, "Go / no-go");
         widgets::para(
             ui,
-            "With a route loaded, the Route panel gives a green (go), yellow (caution) or red (no-go) call for your departure time. It checks the departure and arrival weather (METAR within the hour, then the TAF, then NBM guidance out to about five days) against your personal minimums, crosswind on the best runway against the aircraft's limit, thunderstorms, icing and visibility along the route from model forecasts, strong winds aloft over mountains, terrain clearance, TFRs and prohibited / restricted areas, fuel reserve, weight & balance and night. Set your minimums under Settings. It's advice: you are the pilot in command.",
+            "With a route loaded, the Route panel gives a green (go), yellow (caution) or red (no-go) call for your departure time. It checks the departure and arrival weather (METAR within the hour, then the TAF, then NBM guidance out to about five days) against your personal minimums, crosswind on the best runway against the aircraft's limit, the WPC forecast chart and SPC convective outlook areas the route crosses on the day you fly, strong winds aloft over mountains, terrain clearance, TFRs and prohibited / restricted areas, fuel reserve, weight & balance and night. Set your minimums under Settings. It's advice: you are the pilot in command.",
             t.text2,
             12.0,
         );

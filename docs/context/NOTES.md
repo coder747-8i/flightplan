@@ -15,6 +15,8 @@ flightplan-context `add_note` tool; keep each note short and specific.
 - egui/eframe 0.36: `eframe::App::ui(&mut self, root: &mut Ui, frame)` (not update), `ctx.global_style()/set_global_style`, `TextEdit.frame(Frame::NONE)`, `DroppedFile::path()`. (2026-10-24)
 - Phosphor icons come from egui-phosphor; Inter had its private-use glyphs stripped (assets/fonts/README.md) so icons aren't shadowed. Don't put the phosphor font first: it breaks lowercase text. (2026-10-24)
 - Panels take `state: &mut S` and pass it to both closures; use Cell for flags to avoid double borrows of `app`. (2026-10-24)
+- A single-line TextEdit loses focus on the frame Enter is pressed: check lost_focus() && key_pressed(Enter), not has_focus(). Same for click-to-pick lists under a text field: keep them open with a flag, because pressing the mouse drops the focus before the click lands (ui/search.rs). (2026-10-24)
+- Painted buttons (rail, cards) need resp.widget_info(WidgetInfo::labeled(...)) or screen readers and the kittest click-by-label harness cannot find them. (2026-10-24)
 
 ## Testing
 - The windowed app stalls when the screen is locked (no compositor frames). Use the headless screenshot harness instead: `cargo build --features shots --bin shots`, then `FP_DATA_DIR=<dir> ./target/debug/shots <script> <outdir>`. Script actions are in native/src/ui/shot.rs and native/src/bin/shots.rs. (2026-10-24)
@@ -24,6 +26,7 @@ flightplan-context `add_note` tool; keep each note short and specific.
 - Never add Co-Authored-By / Claude attribution lines to commits or PRs (owner's rule). (2026-10-24)
 - License is AGPL-3.0-only. (2026-10-24)
 - Desktop app must stay native (Rust + egui), never a webview wrapper. (2026-10-24)
+- Owner rule: never synthesize or derive weather forecasts in the app (no home-made radar from model points, no model-field checks). Show and read official products as published: NEXRAD, HRRR, TAF, NBM, WPC chart / QPF, SPC outlooks, AIRMET/SIGMET/G-AIRMET. (2026-10-24)
 
 ## Weather data
 - IEM HRRR extended-run tiles (hrrr::REFD-F1140..2880) often 503 past ~38 h even though refd_{min}.json exists; radar.rs Runs probes the last served hour by binary search on tile 4/3/5. (2026-10-24)

@@ -71,6 +71,8 @@ pub struct App {
     pub prefs: Prefs,
     pub plan: Plan,
     pub wx: Wx,
+    /// day boundaries of the official WPC / SPC products
+    pub outlooks: crate::wx::official::Outlooks,
     pub map: MapView,
     pub tiles: Tiles,
     pub palette: Palette,
@@ -145,6 +147,7 @@ impl App {
             prefs,
             plan: Plan::default(),
             wx: Wx::default(),
+            outlooks: Default::default(),
             map,
             tiles,
             palette,
@@ -315,7 +318,8 @@ impl eframe::App for App {
         self.tiles.begin_frame();
         let ac = self.fleet.active().cloned();
         let expired = self.data_expired();
-        self.plan.update(&self.be, &self.saved.route, ac.as_ref(), &self.wx, &self.saved.minimums, expired);
+        self.outlooks.update(&self.be);
+        self.plan.update(&self.be, &self.saved.route, ac.as_ref(), &self.wx, &self.outlooks, &self.saved.minimums, expired);
         if let Some(p) = self.last_proj {
             self.wx.update(&self.be, &self.saved.wx, p.bounds(), p.zoom);
         }
