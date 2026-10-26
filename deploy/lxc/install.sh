@@ -21,6 +21,11 @@ TUNNEL_IP="${TUNNEL_IP:-}"
 APP=/opt/flightplan
 PKG_NAME=flightplan-server-linux-x86_64.tar.gz
 export DEBIAN_FRONTEND=noninteractive
+# `pct exec` starts with a bare environment: a PATH without /usr/local/bin, and the Proxmox
+# host's locale (which the container doesn't have)
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+unset LANGUAGE
 
 say() { printf '\n\033[1;35m== %s\033[0m\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -86,7 +91,10 @@ cp -r "$src/deploy" "$APP/deploy"
 cp "$src/VERSION" "$APP/VERSION" 2>/dev/null || true
 install -m 0755 "$APP/deploy/flightplan-data-update" /usr/local/bin/flightplan-data-update
 install -m 0755 "$APP/deploy/flightplan-update" /usr/local/bin/flightplan-update
-tippecanoe --version >/dev/null 2>&1 || die "tippecanoe from the package doesn't run here (is this Debian 12 or newer?)"
+if ! out="$(/usr/local/bin/tippecanoe --version 2>&1)"; then
+  echo "$out" >&2
+  die "tippecanoe from the package doesn't run here (is this Debian 12 or newer, x86_64?)"
+fi
 
 say "Python environment for the data pipeline"
 [ -x "$APP/work/.venv/bin/python" ] || python3 -m venv "$APP/work/.venv"

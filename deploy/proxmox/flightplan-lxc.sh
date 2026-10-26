@@ -48,7 +48,8 @@ command -v pct >/dev/null && command -v pveam >/dev/null || die "this runs on a 
 install_into() {
   local id="$1"
   pct push "$id" "$TARBALL" "/root/$PKG_NAME"
-  pct exec "$id" -- env PORT="$PORT" TUNNEL_IP="${TUNNEL_IP:-}" TARBALL="/root/$PKG_NAME" \
+  pct exec "$id" -- env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    PORT="$PORT" TUNNEL_IP="${TUNNEL_IP:-}" TARBALL="/root/$PKG_NAME" \
     bash -c "tar -C /tmp -xzf /root/$PKG_NAME flightplan/deploy/install.sh && bash /tmp/flightplan/deploy/install.sh; s=\$?; rm -rf /tmp/flightplan /root/$PKG_NAME; exit \$s"
 }
 
@@ -127,7 +128,7 @@ cat <<EOF
 Flightplan is running in container $CTID.
   Open:        http://$ctip:$PORT
   Setup code:  ${code:-see: pct exec $CTID -- cat /opt/flightplan/data/setup-code.txt}
-  Chart data:  building now (10 to 20 min): pct exec $CTID -- journalctl -fu flightplan-data
+  Chart data:  building now (about 30 min): pct exec $CTID -- journalctl -fu flightplan-data
   Tunnel:      in Cloudflare Zero Trust, point a public hostname at http://$ctip:$PORT
                (cloudflared can run on any machine on this network)
   Update:      copy a newer package here, unpack it, then: CTID=$CTID UPDATE=1 bash flightplan/deploy/flightplan-lxc.sh

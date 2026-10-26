@@ -4,6 +4,7 @@
 #   flightplan-update /root/flightplan-server-linux-x86_64.tar.gz
 # Without a package it only applies Debian updates.
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 pkg="${1:-${TARBALL:-}}"

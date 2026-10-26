@@ -5,6 +5,7 @@
 # it to hand to connected desktop apps), the server restarts onto it, and the downloads and
 # intermediate files are deleted. If anything fails, the old data stays in place.
 set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 APP=/opt/flightplan
 WORK=$APP/work
