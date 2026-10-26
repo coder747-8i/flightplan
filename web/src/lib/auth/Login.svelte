@@ -1,7 +1,8 @@
 <script lang="ts">
-  // The sign-in screen: a greeting for the time of day with the pilot's name and the password
-  // on the left, the login picture (your own, or the built-in one) on the right. On a fresh
-  // install it is a short walkthrough instead (SetupWalk) that sets the first password.
+  // The sign-in screen: a greeting for the time of day and the password on the left, the login
+  // picture (your own, or the built-in one) on the right. Single-user (the default) greets the
+  // owner by name and asks only for the password; with several people it asks for name and
+  // password. On a fresh install it is a short walkthrough instead (SetupWalk).
   import { Lock, LoaderCircle, Eye, EyeOff, ChevronDown } from '@lucide/svelte'
   import { onMount } from 'svelte'
   import LoginArt from './LoginArt.svelte'
@@ -12,6 +13,7 @@
 
   let phase = $state(phaseOf())
   let password = $state('')
+  let who = $state('')
   let reveal = $state(false)
   let busy = $state(false)
   let error = $state('')
@@ -21,8 +23,10 @@
   let preview = $state<string | null>(null)
   let input = $state<HTMLInputElement>()
 
+  let nameInput = $state<HTMLInputElement>()
+
   onMount(() => {
-    input?.focus()
+    ;(status.multi ? nameInput : input)?.focus()
     const id = setInterval(() => (phase = phaseOf()), 60_000)
     return () => clearInterval(id)
   })
@@ -33,7 +37,7 @@
     error = ''
     busy = true
     try {
-      await auth.login(password)
+      await auth.login(password, status.multi ? who.trim() : '')
       onsignedin()
     } catch (err) {
       error = (err as Error).message
@@ -60,8 +64,14 @@
       <SetupWalk {status} {phase} {onsignedin} onpreview={(url) => (preview = url)} />
     {:else}
       <form onsubmit={submit} oninput={() => (error = '')}>
-        <h1>{greeting(phase)}{status.name ? ',' : ''}</h1>
-        {#if status.name}<div class="name">{status.name}</div>{/if}
+        <h1>{greeting(phase)}{!status.multi && status.name ? ',' : ''}</h1>
+        {#if !status.multi && status.name}<div class="name">{status.name}</div>{/if}
+        {#if status.multi}
+          <label>
+            <span>Name</span>
+            <input class="field" bind:this={nameInput} bind:value={who} autocomplete="username" autocapitalize="words" spellcheck="false" maxlength="40" required />
+          </label>
+        {/if}
         <label>
           <span>Password</span>
           <span class="pw">
@@ -72,7 +82,7 @@
           </span>
         </label>
         {#if error}<p class="err" role="alert">{error}</p>{/if}
-        <button class="btn primary go" type="submit" disabled={busy || !password}>
+        <button class="btn primary go" type="submit" disabled={busy || !password || (status.multi && !who.trim())}>
           {#if busy}<LoaderCircle size={16} class="spin" />{:else}<Lock size={15} />{/if}
           Sign in
         </button>
@@ -81,8 +91,13 @@
         </button>
         {#if forgot}
           <p class="hint">
-            On the computer that runs Flightplan, run <code>flightplan-server set-password</code> (from the <code>server</code> folder). It sets a new
-            password and signs every device out.
+            {#if status.multi}
+              Ask the owner, or on the computer that runs Flightplan run <code>flightplan-server set-password "Your name"</code> (from the
+              <code>server</code> folder). It sets a new password and signs you out everywhere.
+            {:else}
+              On the computer that runs Flightplan, run <code>flightplan-server set-password</code> (from the <code>server</code> folder). It sets a new
+              password and signs every device out.
+            {/if}
           </p>
         {/if}
       </form>

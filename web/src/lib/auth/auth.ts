@@ -7,6 +7,9 @@ export interface AuthStatus {
   /** a password has been set */
   configured: boolean
   signedIn: boolean
+  /** several people sign in with name + password; otherwise just the owner, password only */
+  multi: boolean
+  /** single-user: the owner's name for the greeting (empty with several people) */
   name: string
   hasImage: boolean
   /** shortest password the server accepts */
@@ -29,10 +32,23 @@ async function post(url: string, body: unknown, method = 'POST') {
 
 export const auth = {
   status: async (): Promise<AuthStatus> => (await fetch('/api/auth/status')).json(),
-  login: (password: string) => post('/api/auth/login', { password }),
+  login: (password: string, name = '') => post('/api/auth/login', { name, password }),
   /** check the one-time setup code the server printed */
   setupCheck: (code: string) => post('/api/auth/setup/check', { code }),
-  setup: (code: string, name: string, password: string) => post('/api/auth/setup', { code, name, password }),
+  setup: (code: string, name: string, password: string, multi: boolean) => post('/api/auth/setup', { code, name, password, multi }),
+  me: async (): Promise<Me> => (await fetch('/api/auth/me')).json(),
+  setMode: (multi: boolean) => post('/api/auth/mode', { multi }),
+  users: async (): Promise<Person[]> => {
+    const r = await fetch('/api/auth/users')
+    if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `HTTP ${r.status}`)
+    return r.json()
+  },
+  addUser: (name: string, password: string) => post('/api/auth/users', { name, password }),
+  removeUser: (id: string) => post(`/api/auth/users/${encodeURIComponent(id)}`, {}, 'DELETE'),
+  /** a short code that connects a desktop app to this account */
+  pairing: (): Promise<{ code: string; minutes: number }> => post('/api/auth/pairing', {}),
+  devices: async (): Promise<DeviceInfo[]> => (await fetch('/api/auth/devices')).json(),
+  removeDevice: (id: string) => post(`/api/auth/devices/${encodeURIComponent(id)}`, {}, 'DELETE'),
   logout: () => post('/api/auth/logout', {}),
   /** sign every device out, this one included */
   logoutAll: () => post('/api/auth/logout-all', {}),
@@ -43,6 +59,27 @@ export const auth = {
     if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `HTTP ${r.status}`)
   },
   removeImage: () => post('/api/auth/image', {}, 'DELETE'),
+}
+
+export interface Me {
+  id: string
+  name: string
+  owner: boolean
+  multi: boolean
+}
+
+export interface Person {
+  id: string
+  name: string
+  owner: boolean
+  created: number
+}
+
+export interface DeviceInfo {
+  id: string
+  name: string
+  created: number
+  lastSeen: number
 }
 
 export type Phase = 'morning' | 'afternoon' | 'evening' | 'night'

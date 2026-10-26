@@ -9,6 +9,7 @@ pub mod map;
 pub mod model;
 pub mod nav;
 pub mod store;
+pub mod sync;
 pub mod theme;
 pub mod ui;
 pub mod wx;

@@ -1,5 +1,5 @@
 //! Settings: personal minimums for the go / no-go call, chart data (install / update), API keys,
-//! and re-running setup.
+//! syncing plans with a Flightplan server, and re-running setup.
 
 use super::widgets::{self, faint, section};
 use crate::app::{App, Panel};
@@ -44,6 +44,53 @@ pub fn minimums(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// Pair with the web app's server so saved plans sync both ways, instantly.
+fn sync(app: &mut App, ui: &mut egui::Ui) {
+    let t = app.t;
+    if let Some(c) = app.sync.cfg.clone() {
+        widgets::para(ui, format!("{}  Connected to {}{}", ph::CLOUD_CHECK, c.url, if c.account.is_empty() { String::new() } else { format!(" as {}", c.account) }), t.ok, 12.5);
+        faint(ui, &t, "Saved plans sync both ways: save one here and it's in the web app straight away, and the other way round.");
+        if let Some(at) = app.sync.last_sync {
+            faint(ui, &t, format!("Last synced {}", at.format("%H:%M:%S")));
+        }
+        if !app.sync.error.is_empty() {
+            widgets::para(ui, &app.sync.error, t.bad, 11.5);
+        }
+        if widgets::ghost(ui, &t, format!("{}  Disconnect", ph::PLUGS)).on_hover_text("Stop syncing. Plans stay on this computer and on the server.").clicked() {
+            let be = &app.be;
+            app.sync.disconnect(be);
+            app.toast("Sync stopped");
+        }
+        return;
+    }
+    faint(ui, &t, "Use the plans you save here in the web app and the other way round, instantly. In the web app open Settings → Sign-in → Connect a desktop app for a pairing code.");
+    ui.add_space(4.0);
+    faint(ui, &t, "Server address");
+    ui.add(egui::TextEdit::singleline(&mut app.sync.url_input).hint_text("https://flightplan.example.com").desired_width(f32::INFINITY));
+    let url = crate::sync::normalize_url(&app.sync.url_input);
+    if crate::sync::insecure(&url) {
+        widgets::para(ui, format!("{}  That's plain http over the internet: plans and the sign-in token would travel unencrypted. Use https://.", ph::WARNING), t.warn, 11.5);
+    }
+    faint(ui, &t, "Pairing code");
+    ui.add(egui::TextEdit::singleline(&mut app.sync.code_input).hint_text("XXXX-XXXX-XXXX").font(theme::mono(13.0)).desired_width(f32::INFINITY));
+    faint(ui, &t, "This computer's name (shown in the web app)");
+    ui.add(egui::TextEdit::singleline(&mut app.sync.device_input).desired_width(f32::INFINITY));
+    ui.add_space(4.0);
+    let ready = !app.sync.url_input.trim().is_empty() && app.sync.code_input.chars().filter(|c| c.is_ascii_alphanumeric()).count() == 12;
+    ui.horizontal(|ui| {
+        if ui.add_enabled(ready && !app.sync.busy(), egui::Button::new(RichText::new(format!("{}  Connect", ph::PLUGS_CONNECTED)).color(egui::Color32::WHITE)).fill(t.accent)).clicked() {
+            let be = &app.be;
+            app.sync.connect(be);
+        }
+        if app.sync.busy() {
+            ui.add(egui::Spinner::new().size(14.0));
+        }
+    });
+    if !app.sync.error.is_empty() {
+        widgets::para(ui, &app.sync.error, t.bad, 11.5);
+    }
+}
+
 pub fn panel(app: &mut App, ctx: &egui::Context) {
     let t = app.t;
     let close = widgets::side_panel(ctx, &t, "panel-settings", "Settings", "Minimums, chart data and API keys", 380.0, app, |_, _| false, |ui, app| {
@@ -51,6 +98,8 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
         widgets::fold(ui, &t, "settings-data", "Chart data", true, |ui| super::data::show(app, ui, true));
         let keys_open = !app.keys.notams;
         widgets::fold(ui, &t, "settings-keys", "API keys (FAA NOTAMs)", keys_open, |ui| super::keys::form(app, ui));
+        let sync_open = app.sync.connected() || !app.sync.error.is_empty();
+        widgets::fold(ui, &t, "settings-sync", "Sync with a Flightplan server", sync_open, |ui| sync(app, ui));
         section(ui, &t, "Setup");
         if widgets::button(ui, format!("{}  Run the setup screen again", ph::SPARKLE)).clicked() {
             app.onboarding.reopen(0);

@@ -14,8 +14,13 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
   as the desktop app (see "Web app map" below); keep the two in step when adding features.
 - `server/`: crate `flightplan-server`, **a library first** (`server/src/lib.rs`), plus a thin
   axum binary (`main.rs`). The desktop app calls it directly (`flightplan_server::...`).
-  `auth.rs` locks the web server (password, sessions, setup code, throttling; security headers
-  in lib.rs); it is skipped when `cfg.host` is set (embedded) and the desktop app never serves HTTP.
+  `auth.rs` locks the web server (users: owner + optional others in multi-user mode; sessions,
+  desktop device tokens via pairing codes, setup code, throttling; security headers in lib.rs).
+  Handlers get the signed-in user with the `CurrentUser` extractor; `auth::user_dir` is that
+  user's folder (the owner's is the old user dir). `plans.rs` has per-plan endpoints and the
+  `/api/events` SSE stream (fed by `plans::announce`, also from userstore writes). Auth is skipped
+  when `cfg.host` is set (embedded). The desktop app syncs plans with a remote server in
+  `native/src/sync.rs` (Settings → Sync with a Flightplan server).
 - `pipeline/`: Python + tippecanoe that build the chart data pack from the FAA's 28-day cycle
   (`build_datapack.sh`, also embedded in the app as "Build on this computer").
 - `tools/context-mcp/`: this context server.

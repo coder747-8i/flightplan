@@ -88,6 +88,10 @@ export const api = {
   /** stream a data-pack zip to the server; progress shows up in setupStatus().job */
   setupUpload: (file: File) =>
     j<{ started: boolean }>('/api/setup/upload', { method: 'POST', headers: { 'content-type': 'application/zip', 'x-file-name': encodeURIComponent(file.name) }, body: file }),
+  /** saved flight plans, one by one (shared with a connected desktop app) */
+  plans: () => j<any[]>('/api/plans'),
+  savePlan: (plan: { id: string }) => j<{ ok: boolean }>(`/api/plans/${encodeURIComponent(plan.id)}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) }),
+  deletePlan: (id: string) => j<{ ok: boolean }>(`/api/plans/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   /** a JSON document saved on the server (aircraft, prefs); null when never saved */
   userGet: <T>(key: UserDoc) => j<T | null>(`/api/user/${key}`),
   userPut: (key: UserDoc, value: unknown) => j<{ ok: boolean }>(`/api/user/${key}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) }),
@@ -97,7 +101,7 @@ export const api = {
   hostPrint: () => post<{ ok: boolean }>('/api/host/print', {}),
 }
 
-export type UserDoc = 'aircraft' | 'prefs' | 'plans' | 'minimums'
+export type UserDoc = 'aircraft' | 'prefs' | 'minimums'
 
 export interface StationRaw {
   airport: string

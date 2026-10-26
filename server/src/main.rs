@@ -1,6 +1,6 @@
 //! `flightplan-server`: serve the app from a repository checkout (see run.sh). The desktop app
-//! embeds the same server instead. `flightplan-server set-password` sets the sign-in password
-//! (asks for it, or reads one line from a pipe). Environment: PORT (8787), FP_BIND (0.0.0.0),
+//! embeds the same server instead. `flightplan-server set-password [name]` sets the owner's (or
+//! that person's) sign-in password (asks for it, or reads lines from a pipe). Environment: PORT (8787), FP_BIND (0.0.0.0),
 //! FP_TRUST_PROXY and FP_SECURE_COOKIES (see auth.rs).
 
 use std::{net::SocketAddr, path::PathBuf};
@@ -12,7 +12,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::from_path(root.join(".env"));
     let cfg = flightplan_server::Config::from_root(&root);
     if std::env::args().nth(1).as_deref() == Some("set-password") {
-        return set_password(&cfg);
+        return set_password(&cfg, &std::env::args().nth(2).unwrap_or_default());
     }
     let state = flightplan_server::state(cfg)?;
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8787);
@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Set (or reset) the web app's password from the command line; signs every device out.
-fn set_password(cfg: &flightplan_server::Config) -> anyhow::Result<()> {
+fn set_password(cfg: &flightplan_server::Config, who: &str) -> anyhow::Result<()> {
     use std::io::{BufRead, IsTerminal, Write};
     let auth = flightplan_server::auth::Auth::load(cfg.settings_file.with_file_name("auth.json"));
     let read = |prompt: &str| -> anyhow::Result<String> {
@@ -35,12 +35,13 @@ fn set_password(cfg: &flightplan_server::Config) -> anyhow::Result<()> {
         std::io::stdin().lock().read_line(&mut line)?;
         Ok(line.trim_end_matches(['\r', '\n']).to_string())
     };
-    let name = read("Your name for the greeting (Enter to keep): ")?;
+    // with a name: that person's password; without: the owner's (and optionally their name)
+    let name = if who.is_empty() { read("Your name for the greeting (Enter to keep): ")? } else { String::new() };
     let pw = read(&format!("New password ({}+ characters, shown as you type): ", flightplan_server::auth::MIN_PASSWORD))?;
-    if let Some(problem) = flightplan_server::auth::password_problem(&pw, &name) {
+    if let Some(problem) = flightplan_server::auth::password_problem(&pw, if who.is_empty() { &name } else { who }) {
         anyhow::bail!("{problem}");
     }
-    auth.set_password(&pw, (!name.trim().is_empty()).then_some(name.as_str()))?;
-    eprintln!("Password saved. Every device has to sign in again.");
+    auth.set_password(who, &pw, (!name.trim().is_empty()).then_some(name.as_str()))?;
+    eprintln!("Password saved. {} has to sign in again everywhere, desktop apps included.", if who.is_empty() { "The owner" } else { who });
     Ok(())
 }

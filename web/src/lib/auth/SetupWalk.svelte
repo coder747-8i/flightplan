@@ -1,17 +1,21 @@
 <script lang="ts">
-  // First-run walkthrough that locks the web app: what Flightplan is, the one-time setup code
-  // (proves you run the server), your name for the greeting, the password, the login picture,
-  // then a summary. After it, the app's own setup (chart data, keys, aircraft) carries on.
-  import { ArrowLeft, ArrowRight, Lock, LoaderCircle, Eye, EyeOff, Map as MapIcon, CloudSun, Share2, ShieldCheck, Terminal, ImageUp, Check, KeyRound } from '@lucide/svelte'
+  // First-run walkthrough that locks the web app: your name (for the greeting), what Flightplan
+  // is, just you or several people, the one-time setup code (proves you run the server), the
+  // password, the login picture, then lock it. Once locked: connect the desktop app so plans
+  // saved there show up here straight away (and the other way round). After that the app's own
+  // setup (chart data, keys, aircraft) carries on.
+  import { ArrowLeft, ArrowRight, Lock, LoaderCircle, Eye, EyeOff, Map as MapIcon, CloudSun, Share2, ShieldCheck, Terminal, ImageUp, Check, KeyRound, User, Users, Monitor, Copy, RefreshCw } from '@lucide/svelte'
   import { tick } from 'svelte'
   import { auth, greeting, strength, type AuthStatus, type Phase } from './auth'
 
   let { status, phase, onsignedin, onpreview }: { status: AuthStatus; phase: Phase; onsignedin: () => void; onpreview: (url: string | null) => void } = $props()
 
-  const STEPS = ['Welcome', 'Setup code', 'You', 'Password', 'Picture', 'Ready'] as const
+  const STEPS = ['You', 'Welcome', 'People', 'Setup code', 'Password', 'Picture', 'Lock', 'Desktop app'] as const
+  const LOCK = 6
   let step = $state(0)
-  let code = $state('')
   let name = $state('')
+  let multi = $state(false)
+  let code = $state('')
   let password = $state('')
   let again = $state('')
   let reveal = $state(false)
@@ -21,10 +25,14 @@
   let body = $state<HTMLElement>()
   // a plain file input: the app's file helpers load stores that call the API, which isn't open yet
   let fileInput = $state<HTMLInputElement>()
+  /** desktop pairing, once locked */
+  let pairing = $state<{ code: string; minutes: number } | null>(null)
+  let copied = $state('')
 
   const min = $derived(status.minPassword || 10)
   const score = $derived(strength(password))
   const LABEL = ['Too weak', 'Fair', 'Good', 'Strong']
+  const first = $derived(name.trim().split(/\s+/)[0] ?? '')
 
   /** the same rules the server applies, so problems show before the last step */
   const pwProblem = $derived.by(() => {
@@ -40,13 +48,14 @@
     error = ''
     step = n
     await tick()
-    body?.querySelector<HTMLInputElement>('input:not([type=checkbox])')?.focus()
+    body?.querySelector<HTMLInputElement>('input:not([type=checkbox]):not([type=file]):not([type=radio])')?.focus()
   }
 
   async function next() {
     if (busy) return
     error = ''
-    if (step === 1) {
+    if (step === 2 && multi && !name.trim()) return (error = 'With several people, everyone signs in with their name. Go back and enter yours.')
+    if (step === 3) {
       busy = true
       try {
         await auth.setupCheck(code)
@@ -57,12 +66,13 @@
         busy = false
       }
     }
-    if (step === 3) {
+    if (step === 4) {
       if (pwProblem) return (error = pwProblem)
       if (password !== again) return (error = "The two passwords don't match.")
     }
-    if (step < STEPS.length - 1) go(step + 1)
-    else finish()
+    if (step === LOCK) return lock()
+    if (step === LOCK + 1) return onsignedin()
+    go(step + 1)
   }
 
   function choosePicture() {
@@ -82,20 +92,35 @@
     onpreview(null)
   }
 
-  async function finish() {
+  async function lock() {
     busy = true
     error = ''
     try {
-      await auth.setup(code, name.trim(), password)
+      await auth.setup(code, name.trim(), password, multi)
       if (picture) await auth.setImage(picture).catch(() => {})
-      onsignedin()
+      await newPairing()
+      go(LOCK + 1)
     } catch (e) {
       error = (e as Error).message
-      // a password the server refused: back to that step
-      if (/characters|common|name|over and over/i.test(error)) step = 3
-      if (/setup code/i.test(error)) step = 1
+      // something the server refused: back to that step
+      if (/characters|common|name|over and over/i.test(error)) step = /enter yours/i.test(error) ? 0 : 4
+      if (/setup code/i.test(error)) step = 3
     } finally {
       busy = false
+    }
+  }
+
+  async function newPairing() {
+    pairing = await auth.pairing().catch(() => null)
+  }
+
+  async function copy(what: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      copied = what
+      setTimeout(() => copied === what && (copied = ''), 1500)
+    } catch {
+      /* clipboard blocked: the text is there to select */
     }
   }
 </script>
@@ -116,15 +141,42 @@
 
   <div class="body" bind:this={body}>
     {#if step === 0}
-      <h1>Welcome to Flightplan</h1>
-      <p class="lead">A US flight planner that runs on your own computer. A few things it does:</p>
+      <h1>What's your name?</h1>
+      <p class="lead">It goes in the greeting when you sign in. You can change it any time in Settings → Sign-in, or leave it empty.</p>
+      <label>
+        <span>Your name</span>
+        <input class="field" bind:value={name} autocomplete="given-name" autocapitalize="words" maxlength="40" />
+      </label>
+      <div class="preview">
+        <span class="faint">Your sign-in screen will say</span>
+        <b>{greeting(phase)}{name.trim() ? ',' : ''}</b>
+        {#if name.trim()}<b class="nm">{name.trim()}</b>{/if}
+      </div>
+    {:else if step === 1}
+      <h1>Welcome{first ? `, ${first}` : ''}</h1>
+      <p class="lead">Flightplan is a US flight planner that runs on your own computer. A few things it does:</p>
       <ul class="points">
         <li><MapIcon size={16} /><span>A vector sectional with airspace, airports, terrain, a vertical profile and a navlog with official winds aloft.</span></li>
         <li><CloudSun size={16} /><span>Weather up to five days out and a go / no-go call against your personal minimums.</span></li>
-        <li><Share2 size={16} /><span>A printable briefing, and export to FltPlan Go, Garmin and more.</span></li>
+        <li><Share2 size={16} /><span>A printable briefing, export to FltPlan Go and Garmin, and plans that sync with the desktop app.</span></li>
       </ul>
       <p class="lead"><Lock size={14} /> First, lock it with a password, so only you can open it, even if it's on the internet.</p>
-    {:else if step === 1}
+    {:else if step === 2}
+      <h1>Who uses it?</h1>
+      <div class="modes" role="radiogroup" aria-label="Who uses Flightplan">
+        <button type="button" role="radio" aria-checked={!multi} class="mode" class:on={!multi} onclick={() => (multi = false)}>
+          <User size={18} />
+          <span><b>Just me</b><small>Recommended. You're already picked on the sign-in screen{first ? ` ("${greeting(phase)}, ${first}")` : ''}: only the password is asked for.</small></span>
+          {#if !multi}<Check size={16} class="tick" />{/if}
+        </button>
+        <button type="button" role="radio" aria-checked={multi} class="mode" class:on={multi} onclick={() => (multi = true)}>
+          <Users size={18} />
+          <span><b>Several people</b><small>Everyone signs in with their name and password and has their own plans, aircraft and minimums. You add them in Settings.</small></span>
+          {#if multi}<Check size={16} class="tick" />{/if}
+        </button>
+      </div>
+      <p class="faint small">You can switch later in Settings → Sign-in.</p>
+    {:else if step === 3}
       <h1>Setup code</h1>
       <p class="lead">To prove you run this server, enter the one-time code it printed when it started.</p>
       <div class="where">
@@ -135,19 +187,7 @@
         <span>Setup code</span>
         <input class="field code" bind:value={code} placeholder="XXXX-XXXX-XXXX" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="20" required />
       </label>
-    {:else if step === 2}
-      <h1>Who's flying?</h1>
-      <p class="lead">Your name goes in the greeting on the sign-in screen. Leave it empty if you'd rather not show one.</p>
-      <label>
-        <span>Your name</span>
-        <input class="field" bind:value={name} autocomplete="given-name" maxlength="40" />
-      </label>
-      <div class="preview">
-        <span class="faint">Preview</span>
-        <b>{greeting(phase)}{name.trim() ? ',' : ''}</b>
-        {#if name.trim()}<b class="nm">{name.trim()}</b>{/if}
-      </div>
-    {:else if step === 3}
+    {:else if step === 4}
       <h1>Choose a password</h1>
       <p class="lead">At least {min} characters. A few unrelated words are easy to remember and hard to guess.</p>
       <label>
@@ -167,7 +207,7 @@
         <span>Same password again</span>
         <input class="field" bind:value={again} type={reveal ? 'text' : 'password'} autocomplete="new-password" required />
       </label>
-    {:else if step === 4}
+    {:else if step === 5}
       <h1>Sign-in picture</h1>
       <p class="lead">Shown beside the sign-in form. Keep the built-in one, which follows the time of day, or use a photo of your own.</p>
       <div class="pick">
@@ -181,25 +221,50 @@
       </div>
       <input class="hidden" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif" bind:this={fileInput} onchange={picked} />
       <p class="faint small">JPEG, PNG or WebP, up to 8 MB. You can change it later in Settings.</p>
-    {:else}
+    {:else if step === 6}
       <h1>Ready to lock</h1>
       <ul class="points">
         <li><ShieldCheck size={16} /><span>Every browser needs the password. This one stays signed in for 30 days of use (90 at most).</span></li>
-        <li><KeyRound size={16} /><span>Change the password, sign out, or sign out every device under Settings → Sign-in.</span></li>
+        <li><KeyRound size={16} /><span>Your name, the password, {multi ? 'the people, ' : ''}the picture and signing out are under Settings → Sign-in.</span></li>
         <li><Terminal size={16} /><span>Forgot it? Run <code>flightplan-server set-password</code> on the server.</span></li>
         <li><Lock size={16} /><span>On the internet, serve it over HTTPS (a reverse proxy such as Caddy) with <code>FP_TRUST_PROXY=1</code>. See the README.</span></li>
       </ul>
-      <p class="lead">Next, the app walks you through chart data, keys and your aircraft.</p>
+    {:else}
+      <h1>Connect the desktop app</h1>
+      <p class="lead">Locked. If you also use the Flightplan desktop app, connect it now: plans you save there show up here straight away, and the other way round.</p>
+      <ol class="how">
+        <li>In the desktop app, open <b>Settings → Sync with a Flightplan server</b>.</li>
+        <li>Enter this server's address and the pairing code, then press <b>Connect</b>.</li>
+      </ol>
+      <div class="kv">
+        <span class="faint">Server address</span>
+        <code class="big">{location.origin}</code>
+        <button type="button" class="btn ghost ico" title="Copy the address" onclick={() => copy('url', location.origin)}>{#if copied === 'url'}<Check size={14} />{:else}<Copy size={14} />{/if}</button>
+      </div>
+      <div class="kv">
+        <span class="faint">Pairing code</span>
+        {#if pairing}
+          <code class="big code">{pairing.code}</code>
+          <button type="button" class="btn ghost ico" title="Copy the code" onclick={() => copy('code', pairing!.code)}>{#if copied === 'code'}<Check size={14} />{:else}<Copy size={14} />{/if}</button>
+        {:else}
+          <span class="faint">couldn't make one</span>
+        {/if}
+      </div>
+      <p class="faint small">
+        <Monitor size={12} /> The code works once, for {pairing?.minutes ?? 10} minutes.
+        <button type="button" class="link" onclick={newPairing}><RefreshCw size={12} /> New code</button>
+        You can connect later from Settings → Sign-in too.
+      </p>
     {/if}
   </div>
 
   {#if error}<p class="err" role="alert">{error}</p>{/if}
 
   <div class="nav">
-    {#if step > 0}<button type="button" class="btn back" onclick={() => go(step - 1)} disabled={busy}><ArrowLeft size={15} /> Back</button>{/if}
-    <button class="btn primary next" type="submit" disabled={busy || (step === 1 && code.replace(/[^a-z0-9]/gi, '').length < 12) || (step === 3 && (!password || !again))}>
+    {#if step > 0 && step <= LOCK}<button type="button" class="btn back" onclick={() => go(step - 1)} disabled={busy}><ArrowLeft size={15} /> Back</button>{/if}
+    <button class="btn primary next" type="submit" disabled={busy || (step === 3 && code.replace(/[^a-z0-9]/gi, '').length < 12) || (step === 4 && (!password || !again))}>
       {#if busy}<LoaderCircle size={16} class="spin" />{/if}
-      {#if step === 0}Let's lock it{:else if step === STEPS.length - 1}<Lock size={15} /> Lock it and open Flightplan{:else}Next <ArrowRight size={15} />{/if}
+      {#if step === 1}Let's lock it{:else if step === LOCK}<Lock size={15} /> Lock it{:else if step === LOCK + 1}Open Flightplan <ArrowRight size={15} />{:else}Next <ArrowRight size={15} />{/if}
     </button>
   </div>
 </form>
@@ -273,6 +338,49 @@
     margin-top: 2px;
     color: var(--accent);
   }
+  .modes {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .mode {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    text-align: left;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface-solid);
+    cursor: pointer;
+    position: relative;
+  }
+  .mode.on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .mode > :global(svg:first-child) {
+    flex: none;
+    margin-top: 1px;
+    color: var(--accent);
+  }
+  .mode span {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-right: 18px;
+  }
+  .mode small {
+    color: var(--text-2);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .mode :global(.tick) {
+    position: absolute;
+    right: 12px;
+    top: 12px;
+    color: var(--accent);
+  }
   .where {
     display: flex;
     gap: 8px;
@@ -296,6 +404,56 @@
   }
   .where code {
     background: var(--surface-solid);
+  }
+  .how {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--text-2);
+    line-height: 1.5;
+  }
+  .kv {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--surface-2);
+  }
+  .kv .faint {
+    font-size: 11.5px;
+    width: 92px;
+    flex: none;
+  }
+  .kv .big {
+    flex: 1;
+    font-size: 13.5px;
+    background: none;
+    padding: 0;
+    word-break: break-all;
+  }
+  .kv .big.code {
+    letter-spacing: 0.1em;
+    font-size: 15px;
+    font-weight: 650;
+  }
+  .ico {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    justify-content: center;
+    flex: none;
+  }
+  .link {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--accent);
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 11.5px;
   }
   label {
     display: flex;
@@ -408,6 +566,7 @@
   .small {
     font-size: 11.5px;
     margin: -6px 0 0;
+    line-height: 1.5;
   }
   .err {
     margin: 0;

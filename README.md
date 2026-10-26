@@ -145,14 +145,29 @@ Without built data the server starts in setup mode and the app opens its setup s
 ## Sign-in
 
 The web app is locked with a password. On first start the server prints a one-time **setup
-code** (also in `data/setup-code.txt`); open the app, follow the short walkthrough, enter the
-code, and choose your name, a password (10+ characters) and, optionally, your own sign-in
-picture. Every browser then needs the password; a sign-in lasts 30 days of use (90 at most).
-Change the password, the picture, or sign out (here or everywhere) under **Settings → Sign-in**.
-Forgot it? On the server, run `./target/release/flightplan-server set-password` from `server/`
-(with `FP_ROOT=..`): it sets a new password and signs every device out.
+code** (also in `data/setup-code.txt`); open the app and follow the short walkthrough: your
+name (for the greeting), just you or several people, the setup code, a password (10+
+characters) and, optionally, your own sign-in picture. Then it offers to connect the desktop app.
 
-The desktop app doesn't use any of this: it has no web server.
+- **Just me** (the default): the sign-in screen greets you by name ("Good morning, Justus") and
+  asks only for the password.
+- **Several people**: everyone signs in with their name and password and has their own plans,
+  aircraft and minimums. The owner adds and removes people.
+
+A sign-in lasts 30 days of use (90 at most). Under **Settings → Sign-in**: your name, your
+password, who uses it and the people (owner), the sign-in picture (owner), connected desktop
+apps, and signing out (here or everywhere). Forgot a password? On the server, from `server/`
+with `FP_ROOT=..`, run `./target/release/flightplan-server set-password` (the owner) or
+`… set-password "Sam"` (someone else): it sets a new one and signs that person out everywhere.
+
+### Desktop app sync
+
+Saved plans sync between the desktop app and the web app, both ways and instantly. In the web
+app, **Settings → Sign-in → Connect a desktop app** shows the server's address and a pairing
+code (one use, 10 minutes). In the desktop app, **Settings → Sync with a Flightplan server**,
+enter both and press Connect. The desktop app keeps a device token (not your password) in
+`sync.json` in its data folder; disconnect it from either side. Changing your password or
+"sign out everywhere" disconnects it too.
 
 ### On the internet
 
@@ -177,7 +192,8 @@ FP_BIND=127.0.0.1 FP_TRUST_PROXY=1 ./run.sh
 - `FP_SECURE_COOKIES=1` marks cookies `Secure` even when HTTPS isn't visible to the server.
 
 What's in place: Argon2id password hashing (at most two checks at a time), a one-time setup
-code for the first password, back-off after 5 wrong tries per address (30 s doubling to an hour)
+code for the first password, one-use pairing codes and hashed device tokens for desktop apps,
+the same answer and timing for a wrong name as for a wrong password, back-off after 5 wrong tries per address (30 s doubling to an hour)
 plus a slow-down for everyone while many tries fail, `HttpOnly` / `SameSite=Strict` session
 cookies stored only as hashes, a custom-header check on every change (no cross-site requests),
 a Content-Security-Policy, `X-Frame-Options: DENY`, `nosniff` and a strict referrer policy.

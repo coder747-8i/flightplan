@@ -9,6 +9,7 @@ pub mod forecast;
 pub mod geo;
 mod host;
 pub mod notam;
+pub mod plans;
 pub mod proxy;
 pub mod settings;
 pub mod setup;
@@ -109,6 +110,8 @@ pub struct AppState {
     pub setup: setup::Jobs,
     /// web app sign-in (data/auth.json)
     pub auth: auth::Auth,
+    /// changes to users' documents, for the live update stream (plans.rs)
+    pub events: tokio::sync::broadcast::Sender<plans::Change>,
 }
 
 impl AppState {
@@ -166,6 +169,7 @@ pub fn state(cfg: Config) -> anyhow::Result<Arc<AppState>> {
         cache: proxy::Cached::new(http),
         settings: settings::Settings::load(cfg.settings_file.clone()),
         auth: auth::Auth::load(cfg.settings_file.with_file_name("auth.json")),
+        events: tokio::sync::broadcast::channel(64).0,
         setup: setup::Jobs::default(),
         data: RwLock::new(data),
         cfg,
@@ -197,7 +201,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(setup::routes())
         .merge(host::routes())
         .merge(userstore::routes())
-        .merge(auth::routes());
+        .merge(auth::routes())
+        .merge(plans::routes());
 
     let web = state.cfg.web_dir.clone();
     Router::new()

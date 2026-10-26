@@ -1,6 +1,7 @@
 // Flight plans saved in the app under a name: the route with its fuel stops, altitude and
-// ground time, the aircraft, and a summary for the list. Saved on the server (shared by every
-// device) with a copy in the browser.
+// ground time, the aircraft, and a summary for the list. Saved on the server one by one, with a
+// copy in the browser; the server's change stream (/api/events) brings in plans saved anywhere
+// else (another browser, or the desktop app connected to this server) straight away.
 import { api } from '../api'
 import { aircraft } from './aircraft.svelte'
 import { route, type Waypoint } from './route.svelte'
@@ -35,13 +36,25 @@ function load(): SavedPlan[] {
 class Plans {
   list = $state<SavedPlan[]>(load())
 
-  private persist() {
+  private keepCopy() {
     try {
       localStorage.setItem('fp.plans', JSON.stringify(this.list))
     } catch {
       /* ignore */
     }
-    api.userPut('plans', $state.snapshot(this.list)).catch(() => {})
+  }
+
+  /** The server's list (after a change anywhere). */
+  async refresh() {
+    try {
+      const v = await api.plans()
+      if (Array.isArray(v)) {
+        this.list = v
+        this.keepCopy()
+      }
+    } catch {
+      /* offline: keep what we have */
+    }
   }
 
   /** Save the current route as a named plan (replacing one with the same name). */
@@ -60,7 +73,8 @@ class Plans {
       ...summary,
     }
     this.list = [p, ...this.list.filter((x) => x.name !== n)]
-    this.persist()
+    this.keepCopy()
+    api.savePlan($state.snapshot(p)).catch(() => {})
     return n
   }
 
@@ -79,22 +93,26 @@ class Plans {
 
   remove(id: string) {
     this.list = this.list.filter((x) => x.id !== id)
-    this.persist()
+    this.keepCopy()
+    api.deletePlan(id).catch(() => {})
   }
 }
 
 export const plans = new Plans()
 
-api
-  .userGet<SavedPlan[]>('plans')
-  .then((v) => {
-    if (Array.isArray(v)) {
-      plans.list = v
-      try {
-        localStorage.setItem('fp.plans', JSON.stringify(v))
-      } catch {
-        /* ignore */
-      }
+plans.refresh()
+
+// live updates: the browser reconnects by itself if the stream drops
+try {
+  const events = new EventSource('/api/events')
+  events.onmessage = (e) => {
+    try {
+      const what = JSON.parse(e.data).what
+      if (what === 'plans' || what === 'all') plans.refresh()
+    } catch {
+      /* not ours */
     }
-  })
-  .catch(() => {})
+  }
+} catch {
+  /* no EventSource: the list loads at start only */
+}

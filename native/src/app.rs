@@ -112,6 +112,8 @@ pub struct App {
     pub capturing: bool,
     pub local_build: crate::localbuild::LocalBuild,
     pub history: crate::history::History,
+    /// saved plans synced with a Flightplan server (Settings → Sync)
+    pub sync: crate::sync::Sync,
 }
 
 fn hash_of<T: serde::Serialize>(v: &T) -> u64 {
@@ -132,6 +134,7 @@ impl App {
         let fleet = store.load_fleet();
         let plans = store.load_plans();
         let prefs = store.load_prefs();
+        let sync = crate::sync::Sync::load(&be.user_dir());
         let palette = if saved.night { style::night() } else { style::day() };
         let t = theme::tokens(saved.night);
         let tiles = Tiles::new(ctx.clone(), be.rt().handle().clone(), be.http.clone(), be.cache_dir().join("chart"), be.cfg.tiles_dir.clone());
@@ -185,6 +188,7 @@ impl App {
             capturing: false,
             local_build: Default::default(),
             history: Default::default(),
+            sync,
         };
         app.refresh_keys();
         Ok(app)
@@ -276,6 +280,7 @@ impl App {
             notes: String::new(),
         };
         self.plans.retain(|p| p.name != name);
+        self.sync.push(&self.be, &plan);
         self.plans.insert(0, plan);
         self.store.save_plans(&self.plans);
         self.toast(format!("Saved \"{name}\""));
@@ -299,6 +304,7 @@ impl App {
     pub fn delete_plan(&mut self, id: &str) {
         self.plans.retain(|p| p.id != id);
         self.store.save_plans(&self.plans);
+        self.sync.delete(&self.be, id);
     }
 
     pub fn data_expired(&self) -> bool {
@@ -459,6 +465,9 @@ impl eframe::App for App {
         if ctx.input(|i| i.key_pressed(egui::Key::L) && !i.modifiers.any()) && !ctx.egui_wants_keyboard_input() {
             self.saved.locked = !self.saved.locked;
             self.toast(if self.saved.locked { "View only: the plan is locked (L to edit)" } else { "Editing on" });
+        }
+        if let Some(msg) = self.sync.update(&self.be, &mut self.plans, &self.store) {
+            self.toast(msg);
         }
         self.autosave();
         if let Some(mut s) = self.screenshot.take() {
