@@ -45,11 +45,12 @@ pub fn minimums(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// Pair with the web app's server so saved plans sync both ways, instantly.
-fn sync(app: &mut App, ui: &mut egui::Ui) {
+/// The pairing form (`intro`: with the line explaining what syncing does).
+pub fn sync(app: &mut App, ui: &mut egui::Ui, intro: bool) {
     let t = app.t;
     if let Some(c) = app.sync.cfg.clone() {
         widgets::para(ui, format!("{}  Connected to {}{}", ph::CLOUD_CHECK, c.url, if c.account.is_empty() { String::new() } else { format!(" as {}", c.account) }), t.ok, 12.5);
-        faint(ui, &t, "Saved plans sync both ways: save one here and it's in the web app straight away, and the other way round. Chart data comes from the server too: a new FAA cycle downloads by itself.");
+        faint(ui, &t, "Saved plans and aircraft sync both ways: save one here and it's in the web app straight away, and the other way round. Chart data comes from the server too: a new FAA cycle downloads by itself.");
         if let Some(cy) = &app.sync.server_cycle {
             faint(ui, &t, format!("Server chart data: FAA cycle {cy}"));
         }
@@ -66,8 +67,10 @@ fn sync(app: &mut App, ui: &mut egui::Ui) {
         }
         return;
     }
-    faint(ui, &t, "Use the plans you save here in the web app and the other way round, instantly. In the web app open Settings → Sign-in → Connect a desktop app for a pairing code.");
-    ui.add_space(4.0);
+    if intro {
+        faint(ui, &t, "Use the plans and aircraft you save here in the web app and the other way round, instantly. In the web app open Settings → Sign-in → Connect a desktop app for a pairing code.");
+        ui.add_space(4.0);
+    }
     faint(ui, &t, "Server address");
     ui.add(egui::TextEdit::singleline(&mut app.sync.url_input).hint_text("https://flightplan.example.com").desired_width(f32::INFINITY));
     let url = crate::sync::normalize_url(&app.sync.url_input);
@@ -102,7 +105,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
         let keys_open = !app.keys.notams;
         widgets::fold(ui, &t, "settings-keys", "API keys (FAA NOTAMs)", keys_open, |ui| super::keys::form(app, ui));
         let sync_open = app.sync.connected() || !app.sync.error.is_empty();
-        widgets::fold(ui, &t, "settings-sync", "Sync with a Flightplan server", sync_open, |ui| sync(app, ui));
+        widgets::fold(ui, &t, "settings-sync", "Sync with a Flightplan server", sync_open, |ui| sync(app, ui, true));
         section(ui, &t, "Setup");
         if widgets::button(ui, format!("{}  Run the setup screen again", ph::SPARKLE)).clicked() {
             app.onboarding.reopen(0);

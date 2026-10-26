@@ -220,22 +220,26 @@ let fromServer = false
 let serverReady = false
 let pushTimer: ReturnType<typeof setTimeout> | undefined
 
-api
-  .userGet<{ list: Aircraft[]; savedAt: number }>('aircraft')
-  .then((doc) => {
-    if (doc && Array.isArray(doc.list) && doc.list.length && doc.savedAt > savedAt) {
-      fromServer = true
-      aircraft.list = doc.list
-      if (!doc.list.some((a) => a.id === aircraft.activeId)) aircraft.activeId = doc.list[0].id
-      savedAt = doc.savedAt
-    } else if (!doc && savedAt) {
-      pushSoon(0)
-    }
-  })
-  .catch(() => {
-    /* older server or offline: localStorage only */
-  })
-  .finally(() => (serverReady = true))
+/** Take the server's aircraft when they're newer (at start, and when another device saves). */
+export function pullAircraft() {
+  return api
+    .userGet<{ list: Aircraft[]; savedAt: number }>('aircraft')
+    .then((doc) => {
+      if (doc && Array.isArray(doc.list) && doc.list.length && doc.savedAt > savedAt) {
+        fromServer = true
+        aircraft.list = doc.list
+        if (!doc.list.some((a) => a.id === aircraft.activeId)) aircraft.activeId = doc.list[0].id
+        savedAt = doc.savedAt
+      } else if (!doc && savedAt) {
+        pushSoon(0)
+      }
+    })
+    .catch(() => {
+      /* older server or offline: localStorage only */
+    })
+    .finally(() => (serverReady = true))
+}
+pullAircraft()
 
 function pushSoon(delay = 800) {
   clearTimeout(pushTimer)

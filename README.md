@@ -165,11 +165,15 @@ container:
   systemd unit;
 - builds the FAA chart data itself: every 6 h it checks the FAA's current 28-day cycle and, when
   it changed, downloads, builds and installs the new data, restarts, and deletes the build files
-  (`journalctl -u flightplan-data`; `FORCE=1 flightplan-data-update` rebuilds now);
-- hands that data to every desktop app connected to it (Settings → Sync with a Flightplan
-  server), along with your saved plans.
+  (`journalctl -u flightplan-data`; `FORCE=1 flightplan-data-update` rebuilds now). The first
+  build starts right after installing and takes 10 to 30 minutes; the web app's setup shows its
+  progress instead of asking where to get data;
+- hands that data to every desktop app connected to it (first-run screen → Chart data → From my
+  Flightplan server, or Settings → Sync with a Flightplan server), along with your saved plans
+  and aircraft.
 
-**Updating**: build a new package, copy and unpack it on the Proxmox host as above, then
+**Updating** (no GitHub involved): build a new package on your computer
+(`deploy/build-package.sh`), copy and unpack it on the Proxmox host as above, then
 `CTID=<id> UPDATE=1 bash flightplan/deploy/flightplan-lxc.sh` (keeps all data, passwords and
 settings, and applies Debian updates). Not on Proxmox? Copy the package to any Debian 12 machine
 and run `TARBALL=<package> bash flightplan/deploy/install.sh` as root (it also updates).
@@ -206,10 +210,13 @@ with `FP_ROOT=..`, run `./target/release/flightplan-server set-password` (the ow
 
 ### Desktop app sync
 
-Saved plans sync between the desktop app and the web app, both ways and instantly. In the web
-app, **Settings → Sign-in → Connect a desktop app** shows the server's address and a pairing
-code (one use, 10 minutes). In the desktop app, **Settings → Sync with a Flightplan server**,
-enter both and press Connect. The desktop app keeps a device token (not your password) in
+Saved plans (routes) and aircraft sync between the desktop app and the web app, both ways and
+instantly. In the web app, **Settings → Sign-in → Connect a desktop app** shows the server's
+address and a pairing code (one use, 10 minutes). In the desktop app, enter both under
+**Settings → Sync with a Flightplan server**, or on the first-run screen's Chart data step
+(**From my Flightplan server**), and press Connect. The desktop app then also gets its chart data
+from the server instead of downloading or building it, and a new FAA cycle arrives by itself.
+On first connecting, both sides' aircraft are combined; after that the newest save wins. The desktop app keeps a device token (not your password) in
 `sync.json` in its data folder; disconnect it from either side. Changing your password or
 "sign out everywhere" disconnects it too.
 

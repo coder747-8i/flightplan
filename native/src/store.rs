@@ -212,6 +212,10 @@ impl Store {
     }
     pub fn save_fleet(&self, f: &mut Fleet) {
         f.saved_at = chrono::Utc::now().timestamp_millis();
+        self.write_fleet(f);
+    }
+    /// Save without a new timestamp (aircraft that came from the server).
+    pub fn write_fleet(&self, f: &Fleet) {
         if let Err(e) = write(&self.dir.join("aircraft.json"), f) {
             tracing::warn!("couldn't save aircraft: {e:#}");
         }

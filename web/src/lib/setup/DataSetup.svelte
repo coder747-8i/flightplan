@@ -1,7 +1,8 @@
 <script lang="ts">
   // Install or update the chart & airport data pack: download it, import a .zip, or copy it
-  // from a folder. Progress comes from the server, which does the work.
-  import { CloudDownload, FileArchive, FolderOpen, CircleCheck, TriangleAlert, LoaderCircle, X, RefreshCw } from '@lucide/svelte'
+  // from a folder. Progress comes from the server, which does the work. A server that builds its
+  // own data (the Proxmox LXC) shows that build's progress instead, with the other ways folded away.
+  import { CloudDownload, FileArchive, FolderOpen, CircleCheck, TriangleAlert, LoaderCircle, X, RefreshCw, Server, ChevronDown } from '@lucide/svelte'
   import { onDestroy } from 'svelte'
   import { api, type SetupJob } from '../api'
   import { onboarding } from '../stores/onboarding.svelte'
@@ -23,6 +24,28 @@
   let error = $state('')
   let finished = $state(false)
   let timer: ReturnType<typeof setInterval> | undefined
+
+  const builder = $derived(status?.builder ?? null)
+  const BUILDING = ['queued', 'checking', 'building']
+  const serverBusy = $derived(!!builder && BUILDING.includes(builder.state))
+  let otherWays = $state(false)
+  let now = $state(Date.now())
+  // follow the server's own build; when it lands, the chart reloads onto it
+  $effect(() => {
+    if (!serverBusy) return
+    const wasInstalled = !!status?.installed
+    const cycle = info?.cycle
+    const t = setInterval(async () => {
+      now = Date.now()
+      const s = await onboarding.refresh()
+      if (s && s.installed && (!wasInstalled || s.info?.cycle !== cycle)) {
+        onboarding.dataChanged = true
+        config.reload()
+      }
+    }, 4000)
+    return () => clearInterval(t)
+  })
+  const elapsed = $derived(builder?.started ? Math.max(0, Math.round((now / 1000 - builder.started) / 60)) : 0)
 
   $effect(() => {
     if (!url && status) url = onboarding.prefs.dataUrl || status.defaultUrl
@@ -106,13 +129,37 @@
     <div class="state none">
       <CloudDownload size={16} />
       <div>
-        <b>Chart data needed</b>
-        <div class="faint">Airports, navaids, airspace, obstacles and chart tiles: one download of a few hundred MB, updated every 28 days.</div>
+        <b>{builder && builder.state !== 'error' ? 'Chart data on its way' : 'Chart data needed'}</b>
+        <div class="faint">Airports, navaids, airspace, obstacles and chart tiles{builder ? ', built on this server from the FAA every 28 days.' : ': one download of a few hundred MB, updated every 28 days.'}</div>
       </div>
     </div>
   {/if}
 
-  {#if busy && job}
+  {#if builder && !busy}
+    {#if serverBusy}
+      <div class="progress">
+        <div class="row">
+          <span><LoaderCircle size={14} class="spin" /> {builder.state === 'building' ? `Building${builder.cycle ? ` cycle ${builder.cycle}` : ''}: ${builder.step ?? '…'}` : builder.state === 'checking' ? 'Checking the FAA for the current cycle…' : 'Waiting to start…'}</span>
+          {#if builder.state === 'building'}<span class="faint num">{elapsed} min</span>{/if}
+        </div>
+        <div class="bar"><div style:width="35%" class="indeterminate"></div></div>
+        <p class="faint small-note">
+          <Server size={13} /> This server builds the chart data itself from the FAA, usually in 10 to 30 minutes. {status?.installed ? 'The current data stays in use until the new cycle is ready.' : 'You can carry on with setup meanwhile; the chart fills in when it finishes.'}
+        </p>
+      </div>
+    {:else if builder.state === 'error'}
+      <p class="err">{builder.message ?? 'The chart data build failed.'} It tries again every 6 hours, or run <code>flightplan-data-update</code> in the container.</p>
+    {:else if status?.installed}
+      <p class="faint small-note"><Server size={13} /> This server builds new chart data itself when each FAA cycle starts, and connected desktop apps get it from here.</p>
+    {/if}
+    {#if !otherWays}
+      <button class="link" onclick={() => (otherWays = true)}><ChevronDown size={13} /> Install data another way</button>
+    {/if}
+  {/if}
+
+  {#if builder && !busy && !otherWays}
+    <!-- the server's own build covers it -->
+  {:else if busy && job}
     <div class="progress">
       <div class="row">
         <span><LoaderCircle size={14} class="spin" /> {phase[job.state] ?? job.state}…</span>
@@ -158,6 +205,18 @@
 </div>
 
 <style>
+  .small-note {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    margin: 8px 0 4px;
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+  .small-note :global(svg) {
+    flex: none;
+    margin-top: 2px;
+  }
   .state {
     display: flex;
     gap: 10px;

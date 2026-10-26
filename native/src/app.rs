@@ -104,6 +104,7 @@ pub struct App {
     pub last_proj: Option<Proj>,
     saved_hash: u64,
     fleet_hash: u64,
+    fleet_list_hash: u64,
     save_at: Option<Instant>,
     applied_night: Option<bool>,
     pub notams: Task<Value>,
@@ -141,10 +142,11 @@ impl App {
         let map = MapView::new(saved.view[0], saved.view[1], saved.view[2]);
         let look = Look { palette: palette.clone(), layers: saved.layers.clone(), altitude: saved.altitude, size: 512 };
         let (data_info, data_job) = flightplan_server::setup::current(&be.server);
-        let onboarding = ui::onboarding::Onboarding::new(prefs.onboarded, data_info.is_some());
+        let onboarding = ui::onboarding::Onboarding::new(prefs.onboarded, data_info.is_some() || sync.connected());
         let mut app = App {
             saved_hash: hash_of(&saved),
             fleet_hash: hash_of(&fleet),
+            fleet_list_hash: hash_of(&fleet.list),
             route_ui: ui::route::RouteUi::new(&saved.route),
             route_wx: Default::default(),
             be,
@@ -390,6 +392,12 @@ impl App {
                 if fh != self.fleet_hash {
                     self.store.save_fleet(&mut self.fleet);
                     self.fleet_hash = fh;
+                    // choosing another aircraft is this computer's business; edits go to the server
+                    let lh = hash_of(&self.fleet.list);
+                    if lh != self.fleet_list_hash {
+                        self.fleet_list_hash = lh;
+                        self.sync.push_fleet(&self.be, &self.fleet);
+                    }
                 }
                 self.save_at = None;
             } else {
@@ -466,8 +474,14 @@ impl eframe::App for App {
             self.saved.locked = !self.saved.locked;
             self.toast(if self.saved.locked { "View only: the plan is locked (L to edit)" } else { "Editing on" });
         }
-        if let Some(msg) = self.sync.update(&self.be, &mut self.plans, &self.store) {
+        if let Some(msg) = self.sync.update(&self.be, &mut self.plans, &mut self.fleet, &self.store) {
             self.toast(msg);
+        }
+        if std::mem::take(&mut self.sync.fleet_applied) {
+            // aircraft from the server: save them as they are (no new timestamp, nothing to send back)
+            self.store.write_fleet(&self.fleet);
+            self.fleet_hash = hash_of(&self.fleet.list) ^ hash_of(&self.fleet.active);
+            self.fleet_list_hash = hash_of(&self.fleet.list);
         }
         self.autosave();
         if let Some(mut s) = self.screenshot.take() {

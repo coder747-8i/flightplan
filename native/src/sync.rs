@@ -1,4 +1,5 @@
-//! Sync saved flight plans with a Flightplan server (the web app's), both ways and instantly.
+//! Sync saved flight plans and aircraft with a Flightplan server (the web app's), both ways and
+//! instantly.
 //! The desktop app pairs once with a code from the web app (Settings → Sign-in) and keeps the
 //! device token it gets in sync.json (mode 0600). After that every save or delete here is sent
 //! to the server, and the server's change stream (/api/events) brings in plans saved in the web
@@ -8,6 +9,9 @@
 //! the lists are merged: plans the server doesn't have yet are uploaded, plans deleted on the
 //! server since the last sync are deleted here.
 //!
+//! Aircraft travel as the web app's one document (/api/user/aircraft: `{list, savedAt}`). On
+//! connecting the two fleets are combined; after that the newer document wins, as in the web app.
+//!
 //! Chart data comes from the server too: every few hours (and on connecting) the app asks what
 //! FAA cycle the server has (/api/datapack) and downloads and installs it when it's newer than
 //! what's installed, so a server that builds its own data keeps every connected desktop current.
@@ -15,7 +19,8 @@
 use crate::backend::{Backend, Task};
 use crate::model::place::{new_uid, Kind, Place, Waypoint};
 use crate::model::route::Route;
-use crate::store::SavedPlan;
+use crate::model::aircraft::Aircraft;
+use crate::store::{Fleet, SavedPlan};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -38,9 +43,12 @@ pub struct SyncConfig {
     pub known: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
 enum Ev {
     /// plans changed on the server (or the stream reconnected)
     Changed,
+    /// the aircraft changed on the server (or the stream reconnected)
+    Aircraft,
     /// the server no longer accepts this computer's token
     Unauthorized,
 }
@@ -64,15 +72,44 @@ pub struct Sync {
     again: bool,
     /// the next fetch merges with local plans (after connecting or starting up)
     merge: bool,
+    /// the server's aircraft document
+    fleet_get: Task<anyhow::Result<Value>>,
+    fleet_again: bool,
+    /// the next aircraft fetch combines both fleets (after connecting or starting up)
+    fleet_merge: bool,
+    /// the fleet was replaced from the server: the app saves it without sending it back
+    pub fleet_applied: bool,
     /// the server's chart data, checked every few hours
     pack: Task<anyhow::Result<Value>>,
     pack_at: Option<std::time::Instant>,
     /// FAA cycle the server has (for Settings)
     pub server_cycle: Option<String>,
+    /// the server has no chart data to hand out yet: why ("building it: Tiles, 12 min")
+    pub server_waiting: Option<String>,
 }
 
 /// How often to ask the server whether it has newer chart data.
 const PACK_CHECK: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+/// ...and how often while it has none yet (it is building its first)
+const PACK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What a server without chart data is doing about it, from /api/datapack's "builder".
+pub fn waiting_reason(v: &Value) -> String {
+    let b = &v["builder"];
+    match b["state"].as_str() {
+        Some("building") => {
+            let mins = b["started"].as_i64().map(|s| (chrono::Utc::now().timestamp() - s).max(0) / 60);
+            let step = b["step"].as_str().unwrap_or("starting");
+            match mins {
+                Some(m) => format!("Your server is building the chart data ({step}, {m} min so far). It downloads here when it's done."),
+                None => format!("Your server is building the chart data ({step}). It downloads here when it's done."),
+            }
+        }
+        Some("queued" | "checking") => "Your server is about to build the chart data. It downloads here when it's done.".into(),
+        Some("error") => format!("Your server couldn't build the chart data: {}", b["message"].as_str().unwrap_or("see its log")),
+        _ => "Your server has no chart data yet. Install it there, or use another option below.".into(),
+    }
+}
 
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(d) = path.parent() {
@@ -206,6 +243,31 @@ pub fn merge(remote: Vec<SavedPlan>, local: &[SavedPlan], known: &[String]) -> (
     (out, upload)
 }
 
+/// Combine the server's aircraft with this computer's. Returns the new local list (None: keep
+/// it) and whether to send the result to the server. When connecting (`first`) both fleets are
+/// combined (aircraft with the same id: the newer document's); later the newer document wins.
+pub fn merge_fleet(remote: &[Aircraft], remote_at: i64, local: &Fleet, first: bool) -> (Option<Vec<Aircraft>>, bool) {
+    if remote.is_empty() {
+        // nothing on the server yet: give it ours
+        return (None, !local.list.is_empty());
+    }
+    if !first {
+        return if remote_at > local.saved_at && remote != local.list.as_slice() { (Some(remote.to_vec()), false) } else { (None, false) };
+    }
+    let (newer, older) = if remote_at >= local.saved_at { (remote, local.list.as_slice()) } else { (local.list.as_slice(), remote) };
+    let mut out = newer.to_vec();
+    for a in older {
+        // the sample airplane both sides start with is the same airplane
+        let same_sample = a.tail == "N12345" && out.iter().any(|b| b.tail == a.tail && b.name == a.name);
+        if !same_sample && !out.iter().any(|b| b.id == a.id) {
+            out.push(a.clone());
+        }
+    }
+    let push = out != remote;
+    let list = (out != local.list).then_some(out);
+    (list, push)
+}
+
 /// Read the server's change stream until the token stops working; reconnects after drops.
 async fn listen(http: reqwest::Client, url: String, token: String, tx: mpsc::Sender<Ev>, wake: impl Fn() + Send + 'static) {
     loop {
@@ -213,7 +275,7 @@ async fn listen(http: reqwest::Client, url: String, token: String, tx: mpsc::Sen
         match r {
             Ok(mut resp) if resp.status().is_success() => {
                 // anything may have changed while we weren't listening
-                if tx.send(Ev::Changed).is_err() {
+                if tx.send(Ev::Changed).is_err() || tx.send(Ev::Aircraft).is_err() {
                     return;
                 }
                 wake();
@@ -224,10 +286,18 @@ async fn listen(http: reqwest::Client, url: String, token: String, tx: mpsc::Sen
                         let line: String = buf.drain(..=i).collect();
                         if let Some(data) = line.trim().strip_prefix("data:") {
                             let what = serde_json::from_str::<Value>(data.trim()).ok().and_then(|v| v["what"].as_str().map(String::from)).unwrap_or_default();
-                            if what == "plans" || what == "all" {
-                                if tx.send(Ev::Changed).is_err() {
+                            let evs: &[Ev] = match what.as_str() {
+                                "plans" => &[Ev::Changed],
+                                "aircraft" => &[Ev::Aircraft],
+                                "all" => &[Ev::Changed, Ev::Aircraft],
+                                _ => &[],
+                            };
+                            for ev in evs {
+                                if tx.send(ev.clone()).is_err() {
                                     return;
                                 }
+                            }
+                            if !evs.is_empty() {
                                 wake();
                             }
                         }
@@ -250,7 +320,7 @@ impl Sync {
         let path = user_dir.join("sync.json");
         let cfg: Option<SyncConfig> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).filter(|c: &SyncConfig| !c.token.is_empty());
         let device = std::env::var("HOSTNAME").ok().or_else(|| std::env::var("COMPUTERNAME").ok()).filter(|h| !h.trim().is_empty()).map(|h| format!("Flightplan desktop on {h}")).unwrap_or_else(|| format!("Flightplan desktop ({})", std::env::consts::OS));
-        Sync { path, merge: cfg.is_some(), url_input: cfg.as_ref().map(|c| c.url.clone()).unwrap_or_default(), device_input: device, cfg, ..Default::default() }
+        Sync { path, merge: cfg.is_some(), fleet_merge: cfg.is_some(), url_input: cfg.as_ref().map(|c| c.url.clone()).unwrap_or_default(), device_input: device, cfg, ..Default::default() }
     }
 
     fn save(&self) {
@@ -292,6 +362,8 @@ impl Sync {
 
     /// Stop syncing (and tell the server to forget this computer).
     pub fn disconnect(&mut self, be: &Backend) {
+        self.server_waiting = None;
+        self.server_cycle = None;
         if let Some(c) = self.cfg.take() {
             let http = be.http.clone();
             drop(be.spawn(async move { call(http, reqwest::Method::DELETE, format!("{}/api/auth/device", c.url), c.token, None).await.ok() }));
@@ -342,6 +414,29 @@ impl Sync {
         self.pushes.push(be.spawn(async move { call(http, reqwest::Method::PUT, url, c.token, Some(body)).await.map(|_| ()) }));
     }
 
+    /// Send the aircraft (after a change here).
+    pub fn push_fleet(&mut self, be: &Backend, f: &Fleet) {
+        let Some(c) = self.cfg.clone() else { return };
+        // until the first fetch has combined both fleets, that fetch sends the result
+        if self.fleet_merge {
+            return;
+        }
+        let http = be.http.clone();
+        let body = json!({"list": f.list, "savedAt": f.saved_at});
+        let url = format!("{}/api/user/aircraft", c.url);
+        self.pushes.push(be.spawn(async move { call(http, reqwest::Method::PUT, url, c.token, Some(body)).await.map(|_| ()) }));
+    }
+
+    fn refetch_fleet(&mut self, be: &Backend) {
+        let Some(c) = self.cfg.clone() else { return };
+        if self.fleet_get.pending() {
+            self.fleet_again = true;
+            return;
+        }
+        let http = be.http.clone();
+        self.fleet_get = be.spawn(async move { call(http, reqwest::Method::GET, format!("{}/api/user/aircraft", c.url), c.token, None).await });
+    }
+
     pub fn delete(&mut self, be: &Backend, id: &str) {
         let Some(c) = self.cfg.clone() else { return };
         let http = be.http.clone();
@@ -358,7 +453,7 @@ impl Sync {
     }
 
     /// Once a frame: connect results, server changes, merges. Returns a message for a toast.
-    pub fn update(&mut self, be: &Backend, plans: &mut Vec<SavedPlan>, store: &crate::store::Store) -> Option<String> {
+    pub fn update(&mut self, be: &Backend, plans: &mut Vec<SavedPlan>, fleet: &mut Fleet, store: &crate::store::Store) -> Option<String> {
         let mut toast = None;
         if let Some(r) = self.connect.poll() {
             match r {
@@ -367,6 +462,9 @@ impl Sync {
                     self.cfg = Some(c);
                     self.code_input.clear();
                     self.merge = true;
+                    self.fleet_merge = true;
+                    // ask for its chart data straight away
+                    self.pack_at = None;
                     self.save();
                 }
                 Err(e) => self.error = format!("Couldn't connect: {e:#}"),
@@ -377,11 +475,13 @@ impl Sync {
             self.start_stream(be);
         }
         let mut changed = false;
+        let mut aircraft = false;
         let mut unauthorized = false;
         if let Some(rx) = &self.events {
             while let Ok(ev) = rx.try_recv() {
                 match ev {
                     Ev::Changed => changed = true,
+                    Ev::Aircraft => aircraft = true,
                     Ev::Unauthorized => unauthorized = true,
                 }
             }
@@ -391,6 +491,35 @@ impl Sync {
         }
         if changed {
             self.refetch(be);
+        }
+        if aircraft {
+            self.refetch_fleet(be);
+        }
+        if let Some(r) = self.fleet_get.poll() {
+            match r {
+                Ok(v) => {
+                    let remote_at = v["savedAt"].as_i64().unwrap_or(0);
+                    let remote: Vec<Aircraft> = v["list"].as_array().map(|l| l.iter().filter_map(|a| serde_json::from_value(a.clone()).ok()).collect()).unwrap_or_default();
+                    let first = std::mem::take(&mut self.fleet_merge);
+                    let (list, push) = merge_fleet(&remote, remote_at, fleet, first);
+                    if let Some(list) = list {
+                        if !list.iter().any(|a| a.id == fleet.active) {
+                            fleet.active = list.first().map(|a| a.id.clone()).unwrap_or_default();
+                        }
+                        fleet.list = list;
+                        fleet.saved_at = if push { chrono::Utc::now().timestamp_millis() } else { remote_at };
+                        self.fleet_applied = true;
+                    }
+                    if push {
+                        self.push_fleet(be, fleet);
+                    }
+                }
+                Err(e) if e.to_string() == "unauthorized" => return Some(self.signed_out()),
+                Err(e) => self.error = format!("Couldn't sync aircraft: {e:#}"),
+            }
+            if std::mem::take(&mut self.fleet_again) {
+                self.refetch_fleet(be);
+            }
         }
         if let Some(r) = self.fetch.poll() {
             match r {
@@ -428,7 +557,8 @@ impl Sync {
         }
         // chart data from the server
         if let Some(c) = self.cfg.clone() {
-            if self.pack_at.is_none_or(|t| t.elapsed() > PACK_CHECK) && !self.pack.pending() {
+            let every = if self.server_waiting.is_some() { PACK_WAIT } else { PACK_CHECK };
+            if self.pack_at.is_none_or(|t| t.elapsed() > every) && !self.pack.pending() {
                 self.pack_at = Some(std::time::Instant::now());
                 let http = be.http.clone();
                 self.pack = be.spawn(async move { call(http, reqwest::Method::GET, format!("{}/api/datapack", c.url), c.token, None).await });
@@ -437,6 +567,7 @@ impl Sync {
         if let Some(r) = self.pack.poll() {
             match r {
                 Ok(v) if v["available"].as_bool() == Some(true) => {
+                    self.server_waiting = None;
                     let cycle = v["cycle"].as_str().map(String::from);
                     self.server_cycle = cycle.clone();
                     let (info, job) = flightplan_server::setup::current(&be.server);
@@ -452,7 +583,7 @@ impl Sync {
                         }
                     }
                 }
-                Ok(_) => {}
+                Ok(v) => self.server_waiting = Some(waiting_reason(&v)),
                 Err(e) if e.to_string() == "unauthorized" => return Some(self.signed_out()),
                 // an older server without /api/datapack, or offline: try again later
                 Err(_) => {}
@@ -506,6 +637,34 @@ mod tests {
     }
 
     #[test]
+    fn merging_fleets() {
+        let mut local = Fleet::default();
+        let sample = local.list[0].clone();
+        let mut mine = sample.clone();
+        mine.id = "mine".into();
+        mine.tail = "N747JM".into();
+        local.list.push(mine.clone());
+        local.saved_at = 100;
+        // nothing on the server: send ours
+        assert_eq!(merge_fleet(&[], 0, &local, true), (None, true));
+        // connecting: the web app's own sample (another id) isn't doubled, its airplane is added
+        let mut web_sample = sample.clone();
+        web_sample.id = "websample".into();
+        let mut theirs = sample.clone();
+        theirs.id = "theirs".into();
+        theirs.tail = "N9999".into();
+        let (list, push) = merge_fleet(&[web_sample, theirs.clone()], 50, &local, true);
+        let tails: Vec<String> = list.unwrap().iter().map(|a| a.tail.clone()).collect();
+        assert_eq!(tails, ["N12345", "N747JM", "N9999"]);
+        assert!(push);
+        // later: the newer document wins, an older one changes nothing
+        assert_eq!(merge_fleet(std::slice::from_ref(&theirs), 200, &local, false), (Some(vec![theirs.clone()]), false));
+        assert_eq!(merge_fleet(std::slice::from_ref(&theirs), 50, &local, false), (None, false));
+        // the same fleet comes back (our own save's echo): nothing to do
+        assert_eq!(merge_fleet(&local.list, 100, &local, true), (None, false));
+    }
+
+    #[test]
     fn merging() {
         let server = vec![plan("a", "A", "2026-10-25T12"), plan("b", "B", "2026-10-25T11")];
         let local = vec![plan("a", "A", "2026-10-25T12"), plan("c", "C new here", "2026-10-25T13"), plan("d", "D deleted on the server", "2026-10-24")];
@@ -545,25 +704,47 @@ mod tests {
             // listening, then a plan saved from the desktop shows up
             let (tx, rx) = mpsc::channel();
             let listening = tokio::spawn(listen(http.clone(), url.clone(), token.clone(), tx, || {}));
-            let first = tokio::task::spawn_blocking({
-                let rx_wait = std::time::Duration::from_secs(5);
-                move || {
-                    let a = rx.recv_timeout(rx_wait).map(|e| matches!(e, Ev::Changed));
-                    (a, rx)
-                }
-            })
-            .await
-            .unwrap();
-            assert_eq!(first.0, Ok(true), "a change on connecting");
-            let rx = first.1;
+            // the next event, as "plans" / "aircraft"
+            let next = |rx: mpsc::Receiver<Ev>| async move {
+                tokio::task::spawn_blocking(move || {
+                    let e = rx.recv_timeout(std::time::Duration::from_secs(5)).map(|e| if matches!(e, Ev::Changed) { "plans" } else if matches!(e, Ev::Aircraft) { "aircraft" } else { "other" });
+                    (e, rx)
+                })
+                .await
+                .unwrap()
+            };
+            let (e, rx) = next(rx).await;
+            assert_eq!(e, Ok("plans"), "a change on connecting");
+            let (e, rx) = next(rx).await;
+            assert_eq!(e, Ok("aircraft"), "and the aircraft too");
             let p = plan("deskplan1", "From the desk", "2026-10-25T18:00:00Z");
             call(http.clone(), reqwest::Method::PUT, format!("{url}/api/plans/deskplan1"), token.clone(), Some(to_wire(&p))).await.unwrap();
-            let got = tokio::task::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(5)).map(|e| matches!(e, Ev::Changed))).await.unwrap();
-            assert_eq!(got, Ok(true), "the save was announced");
+            let (e, rx) = next(rx).await;
+            assert_eq!(e, Ok("plans"), "the save was announced");
             // the web app sees it
             let v: Value = http.get(format!("{url}/api/plans")).header("cookie", &cookie).send().await.unwrap().json().await.unwrap();
             assert_eq!(v[0]["name"], "From the desk");
             assert!(from_wire(&v[0]).is_some());
+            // aircraft: the desktop sends its fleet, the web app reads it, edits it, the desktop hears
+            let mut fleet = Fleet::default();
+            fleet.list[0].tail = "N747JM".into();
+            fleet.saved_at = 1000;
+            call(http.clone(), reqwest::Method::PUT, format!("{url}/api/user/aircraft"), token.clone(), Some(json!({"list": fleet.list, "savedAt": fleet.saved_at}))).await.unwrap();
+            let (e, rx) = next(rx).await;
+            assert_eq!(e, Ok("aircraft"));
+            let mut web: Value = http.get(format!("{url}/api/user/aircraft")).header("cookie", &cookie).send().await.unwrap().json().await.unwrap();
+            assert_eq!(web["list"][0]["tail"], "N747JM");
+            web["list"][0]["name"] = json!("Renamed on the web");
+            web["savedAt"] = json!(2000);
+            let r = http.put(format!("{url}/api/user/aircraft")).header("x-flightplan", "1").header("cookie", &cookie).json(&web).send().await.unwrap();
+            assert!(r.status().is_success());
+            let (e, _rx) = next(rx).await;
+            assert_eq!(e, Ok("aircraft"), "the web app's edit was announced");
+            let v = call(http.clone(), reqwest::Method::GET, format!("{url}/api/user/aircraft"), token.clone(), None).await.unwrap();
+            let remote: Vec<Aircraft> = serde_json::from_value(v["list"].clone()).unwrap();
+            let (list, push) = merge_fleet(&remote, v["savedAt"].as_i64().unwrap(), &fleet, false);
+            assert_eq!(list.unwrap()[0].name, "Renamed on the web");
+            assert!(!push);
             // a token that's been disconnected stops working
             call(http.clone(), reqwest::Method::DELETE, format!("{url}/api/auth/device"), token.clone(), None).await.unwrap();
             let err = call(http.clone(), reqwest::Method::GET, format!("{url}/api/plans"), token.clone(), None).await.unwrap_err();

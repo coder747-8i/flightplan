@@ -210,7 +210,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
                 2 => {
                     ui.label(RichText::new("Chart data").font(theme::bold(22.0)));
-                    widgets::para(ui, "The chart, airport database, airspace and obstacles come from the FAA's 28-day cycle, packaged for Flightplan.", t.text2, 14.5);
+                    widgets::para(ui, "The chart, airport database, airspace and obstacles come from the FAA's 28-day cycle, packaged for Flightplan. Have your own Flightplan server? Get them from it, and sync your plans and aircraft.", t.text2, 14.5);
                     ui.add_space(12.0);
                 }
                 3 => {
@@ -276,6 +276,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         };
                         let data_line = match &app.data_info {
                             Some(i) => format!("Chart data installed{}", i.cycle.as_ref().map(|c| format!(" (cycle {c})")).unwrap_or_default()),
+                            None if app.sync.connected() => "Chart data comes from your Flightplan server: the chart fills in when it arrives".into(),
                             None => "No chart data yet: the chart and search stay empty until you install it".into(),
                         };
                         line(ui, installed, data_line);
@@ -303,6 +304,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         if step < STEPS.len() - 1 {
             let footer = Rect::from_min_size(pos2(cx, screen.bottom() - 70.0), vec2(content_w, 44.0));
             let mut fui = ui.new_child(egui::UiBuilder::new().max_rect(footer));
+            // connected to a Flightplan server: its chart data arrives by itself
+            let coming = app.sync.connected();
             fui.horizontal(|ui| {
                 let ob = &mut app.onboarding;
                 if step > 0 && widgets::button(ui, format!("{}  Back", ph::ARROW_LEFT)).clicked() {
@@ -314,7 +317,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = if step == 0 { format!("Get started  {}", ph::ARROW_RIGHT) } else { format!("Next  {}", ph::ARROW_RIGHT) };
-                    let blocked = step == 2 && !installed;
+                    let blocked = step == 2 && !installed && !coming;
                     if ui.add_enabled(!blocked, egui::Button::new(RichText::new(label).color(egui::Color32::WHITE).font(theme::semibold(13.0))).fill(t.accent).min_size(vec2(0.0, 34.0))).clicked() {
                         if step == 1 && ob.slide < SLIDES.len() - 1 {
                             ob.slide += 1;
@@ -322,7 +325,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             go = Some(step + 1);
                         }
                     }
-                    if step == 2 && !installed && widgets::ghost(ui, &t, "Skip for now").clicked() {
+                    if step == 2 && !installed && !coming && widgets::ghost(ui, &t, "Skip for now").clicked() {
                         go = Some(3);
                     }
                     if step == 3 && widgets::ghost(ui, &t, "Skip").clicked() {

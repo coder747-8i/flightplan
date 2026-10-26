@@ -17,6 +17,8 @@
   const go = (i: number) => (onboarding.step = Math.max(0, Math.min(steps.length - 1, i)))
 
   const installed = $derived(!!onboarding.status?.installed)
+  // this server builds the chart data itself (Proxmox LXC): nothing to choose, just wait or move on
+  const building = $derived(!installed && !!onboarding.status?.builder && onboarding.status.builder.state !== 'error')
   let wizard = $state(false)
   let importing = $state(false)
 
@@ -101,7 +103,7 @@
         </div>
       {:else if step === 2}
         <h2>Chart data</h2>
-        <p class="lead">The chart, airport database, airspace and obstacles come from the FAA's 28-day cycle, packaged for Flightplan.</p>
+        <p class="lead">The chart, airport database, airspace and obstacles come from the FAA's 28-day cycle{onboarding.status?.builder ? ': this server downloads and builds them itself' : ', packaged for Flightplan'}.</p>
         <DataSetup />
       {:else if step === 3}
         <h2>Weather & NOTAM keys</h2>
@@ -139,8 +141,8 @@
           <ul class="summary">
             <li class:ok={installed}>
               {#if installed}<CircleCheck size={15} />{:else}<TriangleAlert size={15} />{/if}
-              {installed ? `Chart data installed${onboarding.status?.info?.cycle ? ` (cycle ${onboarding.status.info.cycle})` : ''}` : 'No chart data yet: the chart and search stay empty until you install it'}
-              {#if !installed}<button class="link" onclick={() => go(2)}>Install</button>{/if}
+              {installed ? `Chart data installed${onboarding.status?.info?.cycle ? ` (cycle ${onboarding.status.info.cycle})` : ''}` : building ? 'Chart data is still building on this server: the chart fills in when it finishes' : 'No chart data yet: the chart and search stay empty until you install it'}
+              {#if !installed}<button class="link" onclick={() => go(2)}>{building ? 'Progress' : 'Install'}</button>{/if}
             </li>
             <li class:ok={keysSet}>
               {#if keysSet}<CircleCheck size={15} />{:else}<Circle size={15} />{/if}
@@ -164,12 +166,12 @@
       <footer>
         {#if step > 0}<button class="btn" onclick={back}><ArrowLeft size={14} /> Back</button>{/if}
         <span class="spacer"></span>
-        {#if step === 2 && !installed}
+        {#if step === 2 && !installed && !building}
           <button class="btn ghost" onclick={() => go(3)}>Skip for now</button>
         {:else if step === 3}
           <button class="btn ghost" onclick={() => go(4)}>Skip</button>
         {/if}
-        <button class="btn primary" onclick={next} disabled={step === 2 && !installed}>
+        <button class="btn primary" onclick={next} disabled={step === 2 && !installed && !building}>
           {step === 0 ? 'Get started' : 'Next'} <ArrowRight size={14} />
         </button>
       </footer>

@@ -448,6 +448,7 @@ async fn datapack_info(State(s): State<Arc<AppState>>) -> Json<Value> {
         "cycle": info.as_ref().and_then(|i| i.cycle.clone()),
         "expires": info.as_ref().and_then(|i| i.expires.clone()),
         "built": info.as_ref().and_then(|i| i.built.clone()),
+        "builder": read_build_status(&s.cfg),
     }))
 }
 
@@ -461,9 +462,20 @@ async fn datapack_file(State(s): State<Arc<AppState>>, req: axum::extract::Reque
     }
 }
 
+/// Where a server that builds its own chart data (the Proxmox LXC's flightplan-data-update)
+/// reports how the build is going. Absent on machines that download or import their data.
+pub fn build_status_path(cfg: &Config) -> PathBuf {
+    cfg.build_dir.parent().unwrap_or(&cfg.build_dir).join("build-status.json")
+}
+
+fn read_build_status(cfg: &Config) -> Option<Value> {
+    std::fs::read(build_status_path(cfg)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
 async fn status(State(s): State<Arc<AppState>>) -> Json<Value> {
     let data = s.data.read().clone();
     Json(json!({
+        "builder": read_build_status(&s.cfg),
         "installed": data.is_some(),
         "info": data.as_ref().map(|d| d.info.clone()),
         "job": s.setup.job.lock().clone(),

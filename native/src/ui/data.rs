@@ -30,8 +30,35 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, compact: bool) {
     }
     if let Some(c) = &app.sync.cfg {
         widgets::para(ui, format!("{}  Updates come from your Flightplan server ({}) when it has a new cycle.", ph::CLOUD_CHECK, c.url), t.text2, 11.5);
+        if let Some(w) = &app.sync.server_waiting {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.label(RichText::new(w).size(11.5).color(t.text2));
+            });
+        }
     }
     ui.add_space(8.0);
+    let others_id = egui::Id::new("data-other-ways");
+    if !compact && !busy {
+        // the first-run screen: a Flightplan server (the Proxmox LXC) builds the data, so get it from there
+        if !app.sync.connected() {
+            Frame::new().stroke(egui::Stroke::new(1.0, t.accent)).corner_radius(CornerRadius::same(11)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(format!("{}  From my Flightplan server", ph::HARD_DRIVES)).font(theme::semibold(13.0)));
+                faint(ui, &t, "Your server builds the chart data every FAA cycle; this computer downloads it from there, and your saved plans and aircraft sync with the web app. Get a pairing code in the web app: Settings → Sign-in → Connect a desktop app.");
+                ui.add_space(4.0);
+                super::settings::sync(app, ui, false);
+            });
+            ui.add_space(10.0);
+            faint(ui, &t, "Or install it on this computer:");
+            ui.add_space(4.0);
+        } else if app.data_info.is_none() && !ui.data(|d| d.get_temp::<bool>(others_id)).unwrap_or(false) {
+            if widgets::link(ui, &t, "Install chart data another way").clicked() {
+                ui.data_mut(|d| d.insert_temp(others_id, true));
+            }
+            return;
+        }
+    }
     if busy {
         Frame::new().stroke(egui::Stroke::new(1.0, t.line_strong)).corner_radius(CornerRadius::same(11)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
             ui.set_width(ui.available_width());

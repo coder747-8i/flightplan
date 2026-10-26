@@ -30,7 +30,8 @@ class OnboardingState {
     const [prefs, status] = await Promise.all([api.userGet<Prefs>('prefs').catch(() => null), this.refresh()])
     this.prefs = prefs ?? {}
     const done = local || !!this.prefs.onboarded
-    if (!done || (status && !status.installed)) {
+    // a server that builds its own data fills it in by itself: nothing for returning users to do
+    if (!done || (status && !status.installed && !status.builder)) {
       // returning users with missing data go straight to the data step
       this.step = done ? 2 : 0
       this.open = true

@@ -4,6 +4,7 @@
 # /opt/flightplan/work as the flightplan user; the finished pack is installed (the server keeps
 # it to hand to connected desktop apps), the server restarts onto it, and the downloads and
 # intermediate files are deleted. If anything fails, the old data stays in place.
+# Progress goes to data/build-status.json, which the web app's setup screen shows.
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8
 
@@ -14,11 +15,30 @@ flock -n 9 || { echo "a build is already running"; exit 0; }
 
 as_fp() { runuser -u flightplan -- "$@"; }
 
+# status for the web app: state (queued | checking | building | done | error) plus details
+STATUS=$APP/data/build-status.json
+status() {
+  python3 -I -c 'import json,sys,time
+d={"state":sys.argv[2],"at":int(time.time())}
+for kv in sys.argv[3:]:
+    k,_,v=kv.partition("="); d[k]=int(v) if k in ("started","minutes") else v
+json.dump(d,open(sys.argv[1]+".tmp","w"))' "$STATUS" "$@" && chmod 0644 "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+}
+on_exit() {
+  rc=$?
+  [ "${building:-}" = 1 ] && cleanup
+  [ "$rc" = 0 ] || status error cycle="${current:-}" message="${failed:-the chart data build failed}: see journalctl -u flightplan-data"
+}
+trap on_exit EXIT
+failed="couldn't reach the FAA to check the cycle"
+status checking
+
 current="$(as_fp python3 -I "$APP/pipeline/fetch_faa.py" --print-cycle)"
 installed="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("cycle") or "")' "$APP/data/build/manifest.json" 2>/dev/null || true)"
 echo "FAA cycle $current, installed ${installed:-none}"
 if [ "$current" = "$installed" ] && [ "${FORCE:-}" != 1 ]; then
   echo "up to date"
+  status "done" cycle="$current"
   exit 0
 fi
 
@@ -27,21 +47,33 @@ cleanup() {
   find "${WORK:?}/data" -mindepth 1 -maxdepth 2 ! -path "$WORK/data/raw" ! -path "$WORK/data/raw/overture" -exec rm -rf {} + 2>/dev/null || true
   rm -rf "${WORK:?}/tiles" "${WORK:?}/dist" "${WORK:?}/pipeline"
 }
-trap cleanup EXIT
+building=1
 cleanup
 # the pipeline works relative to its own folder: give it a private copy
 cp -r "$APP/pipeline" "$WORK/pipeline"
 chown -R flightplan:flightplan "$WORK"
 start=$(date +%s)
+failed="building cycle $current failed"
+status building cycle="$current" started="$start" step="Starting"
+# pass the pipeline's output through, and its "== Step" headings on to the status
 as_fp env TIPPECANOE=/usr/local/bin/tippecanoe TIPPECANOE_MAX_THREADS=2 FP_DUCKDB_MEMORY="${FP_DUCKDB_MEMORY:-512MB}" \
-  bash "$WORK/pipeline/build_datapack.sh" --cycle "$current" --out "$WORK/dist/flightplan-data.zip"
+  bash "$WORK/pipeline/build_datapack.sh" --cycle "$current" --out "$WORK/dist/flightplan-data.zip" 2>&1 |
+  while IFS= read -r line; do
+    printf '%s\n' "$line"
+    plain="$(printf '%s' "$line" | sed 's/\x1b\[[0-9;]*m//g')"
+    case "$plain" in "== "*) status building cycle="$current" started="$start" step="${plain#== }" ;; esac
+  done
+failed="installing cycle $current failed"
+status building cycle="$current" started="$start" step="Installing"
 as_fp env FP_ROOT="$APP" "$APP/bin/flightplan-server" install-data "$WORK/dist/flightplan-data.zip"
 systemctl restart flightplan.service
 port="$(systemctl show flightplan.service -p Environment --value | tr ' ' '\n' | sed -n 's/^PORT=//p')"
 for _ in $(seq 1 30); do curl -fs "http://127.0.0.1:${port:-1826}/api/health" >/dev/null 2>&1 && break; sleep 1; done
 if ! curl -fs "http://127.0.0.1:${port:-1826}/api/health" >/dev/null 2>&1; then
   journalctl -u flightplan -n 20 --no-pager
-  echo "the server didn't come back after installing cycle $current" >&2
+  failed="the server didn't come back after installing cycle $current"
+  echo "$failed" >&2
   exit 1
 fi
+status "done" cycle="$current" minutes="$(( ($(date +%s) - start) / 60 ))"
 echo "installed cycle $current in $(( ($(date +%s) - start) / 60 )) min"

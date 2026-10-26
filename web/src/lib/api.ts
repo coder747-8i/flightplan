@@ -153,7 +153,19 @@ export interface SetupJob {
   message: string
 }
 
+/** progress of a server that builds its own chart data (the Proxmox LXC); null elsewhere */
+export interface BuildStatus {
+  state: 'queued' | 'checking' | 'building' | 'done' | 'error'
+  at: number
+  cycle?: string
+  step?: string
+  started?: number
+  minutes?: number
+  message?: string
+}
+
 export interface SetupStatus {
+  builder: BuildStatus | null
   installed: boolean
   info: DataInfo | null
   job: SetupJob

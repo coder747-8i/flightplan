@@ -183,10 +183,15 @@ if ! up && journalctl -u flightplan -n 30 --no-pager 2>/dev/null | grep -qE '226
 fi
 up || { journalctl -u flightplan -n 20 --no-pager; die "the server didn't start"; }
 
-# first chart data, in the background (about 10 to 20 minutes)
+# first chart data, in the background (about 10 to 30 minutes). The status file also tells the
+# web app's setup screen that this server builds its own data, so it doesn't offer downloads.
 if [ ! -f "$APP/data/build/manifest.json" ]; then
+  [ -f "$APP/data/build-status.json" ] || printf '{"state":"queued","at":%s}\n' "$(date +%s)" >"$APP/data/build-status.json"
   systemctl start --no-block flightplan-data.service
+elif [ ! -f "$APP/data/build-status.json" ]; then
+  printf '{"state":"done","at":%s}\n' "$(date +%s)" >"$APP/data/build-status.json"
 fi
+chmod 0644 "$APP/data/build-status.json"
 
 rm -rf /var/lib/apt/lists/* /var/cache/apt/*.bin
 ip="$(hostname -I 2>/dev/null | awk '{print $1}')"

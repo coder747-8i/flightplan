@@ -3,7 +3,7 @@
 // copy in the browser; the server's change stream (/api/events) brings in plans saved anywhere
 // else (another browser, or the desktop app connected to this server) straight away.
 import { api } from '../api'
-import { aircraft } from './aircraft.svelte'
+import { aircraft, pullAircraft } from './aircraft.svelte'
 import { route, type Waypoint } from './route.svelte'
 
 export interface SavedPlan {
@@ -109,6 +109,8 @@ try {
     try {
       const what = JSON.parse(e.data).what
       if (what === 'plans' || what === 'all') plans.refresh()
+      // aircraft saved in the desktop app (or another browser)
+      if (what === 'aircraft' || what === 'all') pullAircraft()
     } catch {
       /* not ours */
     }
