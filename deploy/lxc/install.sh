@@ -186,8 +186,20 @@ systemctl daemon-reload
 systemctl enable -q --now flightplan.service flightplan-data.timer
 systemctl restart flightplan.service
 
-for _ in $(seq 1 30); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 1; done
-curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null || { journalctl -u flightplan -n 20 --no-pager; die "the server didn't start"; }
+up() {
+  for _ in $(seq 1 30); do curl -fs "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && return 0; sleep 1; done
+  return 1
+}
+if ! up && journalctl -u flightplan -n 30 --no-pager 2>/dev/null | grep -qE '226/NAMESPACE|namespac'; then
+  # some container setups can't give a service its own mount namespace: run without that sandbox
+  echo "this container can't sandbox the service; running it without the filesystem sandbox"
+  mkdir -p /etc/systemd/system/flightplan.service.d
+  printf '[Service]\nPrivateTmp=no\nProtectSystem=no\nProtectHome=no\nProtectKernelTunables=no\nProtectControlGroups=no\nReadWritePaths=\n' \
+    >/etc/systemd/system/flightplan.service.d/10-no-sandbox.conf
+  systemctl daemon-reload
+  systemctl restart flightplan.service
+fi
+up || { journalctl -u flightplan -n 20 --no-pager; die "the server didn't start"; }
 
 # first chart data, in the background (about 10 to 20 minutes)
 if [ ! -f "$APP/data/build/manifest.json" ]; then

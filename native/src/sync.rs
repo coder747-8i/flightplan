@@ -573,6 +573,61 @@ mod tests {
         });
     }
 
+    /// A desktop's own data folder installs the server's chart data with its device token. Needs
+    /// a built pack at ../dist/flightplan-data.zip (pipeline/build_datapack.sh), so it's ignored by
+    /// default: `cargo test datapack -- --ignored`.
+    #[test]
+    #[ignore]
+    fn installs_chart_data_from_the_server() {
+        let pack = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../dist/flightplan-data.zip");
+        assert!(pack.is_file(), "build a data pack first");
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let root = std::env::temp_dir().join(format!("fp-datapack-{}", new_uid()));
+            // the server: a password, the pack installed (and kept for desktops)
+            let st = flightplan_server::state(flightplan_server::Config::from_root(&root.join("server"))).unwrap();
+            st.auth.set_password("", "tailwind over the ridge", Some("Justus")).unwrap();
+            flightplan_server::setup::start_zip(st.clone(), pack.clone()).unwrap();
+            let wait = |s: std::sync::Arc<flightplan_server::AppState>| async move {
+                for _ in 0..600 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    let (_, job) = flightplan_server::setup::current(&s);
+                    if job.state == "done" || job.state == "error" {
+                        return job;
+                    }
+                }
+                panic!("install didn't finish");
+            };
+            assert_eq!(wait(st.clone()).await.state, "done");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(flightplan_server::serve(st, listener));
+            // pair like the desktop app
+            let http = reqwest::Client::new();
+            let r = http.post(format!("{url}/api/auth/login")).header("x-flightplan", "1").json(&json!({"password": "tailwind over the ridge"})).send().await.unwrap();
+            let cookie = r.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+            let v: Value = http.post(format!("{url}/api/auth/pairing")).header("x-flightplan", "1").header("cookie", &cookie).send().await.unwrap().json().await.unwrap();
+            let v = call(http.clone(), reqwest::Method::POST, format!("{url}/api/auth/pair"), String::new(), Some(json!({"code": v["code"]}))).await.unwrap();
+            let token = v["token"].as_str().unwrap().to_string();
+            let info = call(http.clone(), reqwest::Method::GET, format!("{url}/api/datapack"), token.clone(), None).await.unwrap();
+            assert_eq!(info["available"], true);
+            // the desktop's embedded library downloads and installs it with the token
+            let mut desk_cfg = flightplan_server::Config::app_dir(&root.join("desktop"), root.join("desktop/web"));
+            desk_cfg.host = None;
+            let desk = flightplan_server::state(desk_cfg).unwrap();
+            flightplan_server::setup::start_download_with(desk.clone(), format!("{url}/api/datapack/file"), Some(token)).unwrap();
+            let job = wait(desk.clone()).await;
+            assert_eq!(job.state, "done", "{}", job.message);
+            let (info2, _) = flightplan_server::setup::current(&desk);
+            assert_eq!(info2.unwrap().cycle, info["cycle"].as_str().map(String::from));
+            // without the token: refused
+            let other = flightplan_server::state(flightplan_server::Config::app_dir(&root.join("other"), root.join("other/web"))).unwrap();
+            flightplan_server::setup::start_download_with(other.clone(), format!("{url}/api/datapack/file"), None).unwrap();
+            assert_eq!(wait(other).await.state, "error");
+            let _ = std::fs::remove_dir_all(root);
+        });
+    }
+
     #[test]
     fn urls() {
         assert_eq!(normalize_url("flightplan.example.com/"), "https://flightplan.example.com");
