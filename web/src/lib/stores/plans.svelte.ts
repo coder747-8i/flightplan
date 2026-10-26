@@ -82,7 +82,8 @@ class Plans {
   load(id: string) {
     const p = this.list.find((x) => x.id === id)
     if (!p) return null
-    route.waypoints = structuredClone(p.route.waypoints)
+    // a copy, not the list's own objects (structuredClone throws on Svelte's state proxies)
+    route.waypoints = $state.snapshot(p.route.waypoints)
     route.cruise = p.route.cruise
     route.departure = p.route.departure
     route.stopMinutes = p.route.stopMinutes || 45
