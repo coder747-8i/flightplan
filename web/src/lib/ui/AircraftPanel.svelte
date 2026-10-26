@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Plus, Trash2, ChevronDown, CircleCheck, OctagonAlert, FileUp, Download, Pencil, Copy } from '@lucide/svelte'
+  import { Plus, Trash2, ChevronDown, CircleCheck, OctagonAlert, FileUp, Download, Pencil, Copy, Lock } from '@lucide/svelte'
+  import { route } from '../stores/route.svelte'
   import PanelShell from './PanelShell.svelte'
   import WBChart from './WBChart.svelte'
   import AircraftWizard from './AircraftWizard.svelte'
@@ -10,7 +11,9 @@
   import { saveFile, slug } from '../io/files'
 
   const ac = $derived(aircraft.active)
-  const wb = $derived(ac ? computeWB(ac, plan.log?.tripFuel ?? 0) : null)
+  // the longest flight between fuel stops burns the most: the worst landing weight / CG shift
+  const burn = $derived(plan.log?.segments.length ? Math.max(...plan.log.segments.map((s) => s.tripFuel)) : (plan.log?.tripFuel ?? 0))
+  const wb = $derived(ac ? computeWB(ac, burn) : null)
   let editPerf = $state(false)
   let editWB = $state(false)
   let wizard = $state<null | 'new' | 'edit'>(null)
@@ -44,8 +47,8 @@
 
 <PanelShell title="Aircraft" subtitle="Performance and weight & balance" width={380}>
   {#snippet actions()}
-    <button class="btn ghost ico" title="New aircraft (guided)" onclick={() => (wizard = 'new')} data-tour="aircraft-new"><Plus size={16} /></button>
-    <button class="btn ghost ico" title="Import aircraft files" onclick={() => (importing = true)}><FileUp size={15} /></button>
+    <button class="btn ghost ico" title="New aircraft (guided)" onclick={() => (wizard = 'new')} disabled={route.locked} data-tour="aircraft-new"><Plus size={16} /></button>
+    <button class="btn ghost ico" title="Import aircraft files" onclick={() => (importing = true)} disabled={route.locked}><FileUp size={15} /></button>
     <span class="menu-wrap">
       <button class="btn ghost ico" title="Export aircraft" onclick={() => (exportOpen = !exportOpen)}><Download size={15} /></button>
       {#if exportOpen}
@@ -57,6 +60,9 @@
     </span>
   {/snippet}
 
+  <!-- view only: the aircraft and its loading can't change -->
+  {#if route.locked}<p class="locked faint"><Lock size={13} /> View only. Press L or the lock in the rail to edit.</p>{/if}
+  <fieldset class="lockable" disabled={route.locked}>
   <div class="pick">
     <select class="field" bind:value={aircraft.activeId}>
       {#each aircraft.list as a}<option value={a.id}>{a.tail || 'No tail'} · {a.name}</option>{/each}
@@ -107,7 +113,7 @@
       <tbody>
         <tr><td>Ramp</td><td class="num">{Math.round(wb.ramp.weight)}</td><td class="num">{wb.ramp.cg.toFixed(2)}</td></tr>
         <tr><td>Takeoff</td><td class="num"><b>{Math.round(wb.takeoff.weight)}</b> <small class="faint">/ {ac.wb.maxTakeoff}</small></td><td class="num"><b>{wb.takeoff.cg.toFixed(2)}</b></td></tr>
-        <tr><td>Landing <small class="faint">(−{(plan.log?.tripFuel ?? 0).toFixed(1)} gal)</small></td><td class="num">{Math.round(wb.landing.weight)}</td><td class="num">{wb.landing.cg.toFixed(2)}</td></tr>
+        <tr><td>Landing <small class="faint">(−{burn.toFixed(1)} gal)</small></td><td class="num">{Math.round(wb.landing.weight)}</td><td class="num">{wb.landing.cg.toFixed(2)}</td></tr>
         <tr><td>Zero fuel</td><td class="num">{Math.round(wb.zeroFuel.weight)}</td><td class="num">{wb.zeroFuel.cg.toFixed(2)}</td></tr>
       </tbody>
     </table>
@@ -164,6 +170,7 @@
     {/if}
     <p class="faint small">Your aircraft's actual weighing record and POH govern. Templates are typical values only.</p>
   {/if}
+  </fieldset>
 </PanelShell>
 
 {#if wizard}
@@ -172,6 +179,19 @@
 {#if importing}<AircraftImport onclose={() => (importing = false)} />{/if}
 
 <style>
+  .lockable {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+  }
+  .locked {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    margin: 0 0 8px;
+  }
   .ico {
     width: 30px;
     padding: 0;

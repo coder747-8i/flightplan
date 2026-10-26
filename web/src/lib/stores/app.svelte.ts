@@ -61,6 +61,17 @@ class AppState {
   selection = $state<null | { kind: 'airport'; id: string } | { kind: 'point'; lngLat: [number, number]; items: PointItem[] }>(null)
   cursor = $state<{ lat: number; lon: number; zoom: number } | null>(null)
   tourStep = $state<number | null>(null)
+  /** height of the vertical profile drawer (px), so the timeline can sit above it */
+  drawerHeight = $state(0)
+  /** a short message at the bottom of the screen */
+  toast = $state<{ text: string; at: number } | null>(null)
+}
+
+/** Show a short message for a few seconds. */
+export function toast(text: string) {
+  const t = { text, at: Date.now() }
+  app.toast = t
+  setTimeout(() => app.toast === t && (app.toast = null), 3500)
 }
 
 export interface PointItem {

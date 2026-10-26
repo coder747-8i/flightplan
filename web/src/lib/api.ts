@@ -17,8 +17,15 @@ export function apiFetch(url: string, init: RequestInit = {}): Promise<Response>
   return fetch(url, { ...init, headers })
 }
 
+let signingOut = false
+
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await apiFetch(url, init)
+  // the session ended (signed out elsewhere, password changed, expired): back to sign-in
+  if (r.status === 401 && !signingOut) {
+    signingOut = true
+    location.reload()
+  }
   if (!r.ok) {
     const text = await r.text()
     let msg = text.slice(0, 300)
@@ -38,6 +45,8 @@ const post = <T>(url: string, body: unknown) =>
 export const api = {
   search: (q: string) => j<Place[]>(`/api/search?q=${encodeURIComponent(q)}`),
   resolve: (ids: string) => j<{ token: string; place: Place | null }[]>(`/api/resolve?ids=${encodeURIComponent(ids)}`),
+  /** a whole route string, airways expanded to their fixes */
+  route: (text: string) => j<{ places: Place[]; missing: string[] }>(`/api/route?text=${encodeURIComponent(text)}`),
   airport: (id: string) => j<any>(`/api/airport/${encodeURIComponent(id)}`),
   nearest: (lat: number, lon: number, r = 25) => j<{ place: Place; dist: number }[]>(`/api/nearest?lat=${lat}&lon=${lon}&r=${r}`),
   profile: (path: [number, number][], corridor = 1) =>
@@ -59,6 +68,18 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ points }),
     }),
+  /** every NWS winds-aloft (FB) station, for the winds layer */
+  fbPoints: () => j<{ source: string; points: (WindPoint & { station: string })[] }>('/api/wx/fb'),
+  /** METAR, TAF and NBM guidance for an airport (or the nearest station that has them) */
+  station: (airport: string, icao: string, lat: number, lon: number) =>
+    j<StationRaw>(`/api/wx/station?airport=${encodeURIComponent(airport)}&icao=${encodeURIComponent(icao)}&lat=${lat}&lon=${lon}`),
+  /** WPC forecast chart and SPC outlook areas a route crosses, all days */
+  official: (path: [number, number][]) => post<OfficialHit[]>('/api/wx/official', { path }),
+  /** when the WPC chart's and SPC outlook's day 1 ends (unix s) */
+  outlooks: () => j<{ wpcDay1End: number | null; spcDay1End: number | null }>('/api/wx/outlooks'),
+  /** HRRR runs with tiles at IEM (unix s) and the last extended-run minute served */
+  hrrr: () => j<{ short: number | null; extended: number | null; extendedLast: number }>('/api/wx/hrrr'),
+  notams: (req: { locations?: string[]; points?: [number, number][]; radius?: number; artccs?: string[] }) => post<NotamResponse>('/api/notams', req),
   config: () => j<ServerConfig>('/api/config'),
   setupStatus: () => j<SetupStatus>('/api/setup/status'),
   setupDownload: (url?: string) => post<{ started: boolean }>('/api/setup/download', { url }),
@@ -68,12 +89,39 @@ export const api = {
   setupUpload: (file: File) =>
     j<{ started: boolean }>('/api/setup/upload', { method: 'POST', headers: { 'content-type': 'application/zip', 'x-file-name': encodeURIComponent(file.name) }, body: file }),
   /** a JSON document saved on the server (aircraft, prefs); null when never saved */
-  userGet: <T>(key: 'aircraft' | 'prefs') => j<T | null>(`/api/user/${key}`),
-  userPut: (key: 'aircraft' | 'prefs', value: unknown) => j<{ ok: boolean }>(`/api/user/${key}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) }),
+  userGet: <T>(key: UserDoc) => j<T | null>(`/api/user/${key}`),
+  userPut: (key: UserDoc, value: unknown) => j<{ ok: boolean }>(`/api/user/${key}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) }),
   hostSave: (name: string, label: string, body: Blob) =>
     j<{ path?: string; cancelled?: boolean }>(`/api/host/save?name=${encodeURIComponent(name)}&label=${encodeURIComponent(label)}`, { method: 'POST', body }),
   hostOpen: (url: string) => post<{ ok: boolean }>('/api/host/open', { url }),
   hostPrint: () => post<{ ok: boolean }>('/api/host/print', {}),
+}
+
+export type UserDoc = 'aircraft' | 'prefs' | 'plans' | 'minimums'
+
+export interface StationRaw {
+  airport: string
+  station: string
+  offset_nm: number
+  metar: any | null
+  taf: any | null
+  /** IEM mos.json documents */
+  nbs: any | null
+  nbe: any | null
+}
+
+export interface OfficialHit {
+  product: string
+  day: number
+  label: string
+  detail: string
+}
+
+export interface NotamResponse {
+  configured: boolean
+  service?: string
+  items: any[]
+  errors?: string[]
 }
 
 export interface DataInfo {
@@ -132,5 +180,8 @@ export interface WindPoint {
   lat: number
   lon: number
   error?: string
-  levels: { p: number; alt: number; times: { t: number; dir: number; spd: number; temp: number | null; alt: number }[] }[]
+  /** NM to the FB station the forecast comes from */
+  station_nm?: number
+  /** each time carries the bulletin's "for use" window (unix s) */
+  levels: { p: number; alt: number; times: { t: number; dir: number; spd: number; temp: number | null; alt: number; from?: number; to?: number }[] }[]
 }

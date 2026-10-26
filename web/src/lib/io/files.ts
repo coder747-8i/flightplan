@@ -44,7 +44,9 @@ export function pickFiles(accept: string, multiple = false): Promise<File[]> {
 }
 
 export function openExternal(url: string) {
-  if (config.desktop) api.hostOpen(url).catch(() => window.open(url, '_blank', 'noopener'))
+  // mail links hand over to the mail app without leaving a blank tab behind
+  if (url.startsWith('mailto:')) window.location.href = url
+  else if (config.desktop) api.hostOpen(url).catch(() => window.open(url, '_blank', 'noopener'))
   else window.open(url, '_blank', 'noopener')
 }
 

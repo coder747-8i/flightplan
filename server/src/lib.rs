@@ -1,9 +1,11 @@
 //! Flightplan API server: airport data, search, terrain profiles, weather/TFR proxy, Windy,
-//! data-pack setup, and static hosting for the web app + PMTiles chart.
+//! data-pack setup, sign-in, and static hosting for the web app + PMTiles chart.
 //! Used by the `flightplan-server` binary (browser/LAN use) and embedded in the desktop app.
 
 pub mod airspace;
+pub mod auth;
 pub mod db;
+pub mod forecast;
 pub mod geo;
 mod host;
 pub mod notam;
@@ -105,6 +107,8 @@ pub struct AppState {
     pub cache: proxy::Cached,
     pub settings: settings::Settings,
     pub setup: setup::Jobs,
+    /// web app sign-in (data/auth.json)
+    pub auth: auth::Auth,
 }
 
 impl AppState {
@@ -157,14 +161,20 @@ pub fn state(cfg: Config) -> anyhow::Result<Arc<AppState>> {
             None
         }
     };
-    Ok(Arc::new(AppState {
+    let st = Arc::new(AppState {
         terrain: terrain::Terrain::new(cfg.cache_dir.join("terrarium"), http.clone()),
         cache: proxy::Cached::new(http),
         settings: settings::Settings::load(cfg.settings_file.clone()),
+        auth: auth::Auth::load(cfg.settings_file.with_file_name("auth.json")),
         setup: setup::Jobs::default(),
         data: RwLock::new(data),
         cfg,
-    }))
+    });
+    // a fresh standalone server prints the code that authorises its first password
+    if st.cfg.host.is_none() {
+        st.auth.announce();
+    }
+    Ok(st)
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -174,17 +184,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/airport/{id}", get(airport))
         .route("/search", get(search))
         .route("/resolve", get(resolve))
+        .route("/route", get(route_text))
         .route("/nearest", get(nearest))
         .route("/profile", post(profile))
         .route("/obstacles", get(obstacles))
         .route("/elevation", get(elevation))
         .route("/fbo/{id}", get(fbo))
         .merge(wx::routes())
+        .merge(forecast::routes())
         .merge(notam::routes())
         .merge(settings::routes())
         .merge(setup::routes())
         .merge(host::routes())
-        .merge(userstore::routes());
+        .merge(userstore::routes())
+        .merge(auth::routes());
 
     let web = state.cfg.web_dir.clone();
     Router::new()
@@ -192,6 +205,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .nest_service("/tiles", ServeDir::new(&state.cfg.tiles_dir))
         .fallback_service(ServeDir::new(&web).fallback(tower_http::services::ServeFile::new(web.join("index.html"))))
         .layer(axum::middleware::from_fn(cache_headers))
+        .layer(axum::middleware::from_fn(security_headers))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::require))
         .layer(axum::middleware::from_fn_with_state(state.clone(), guard))
         .layer(CompressionLayer::new())
         .with_state(state)
@@ -200,7 +215,8 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// Serve until the listener fails.
 pub async fn serve(state: Arc<AppState>, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
     tracing::info!("listening on http://{}", listener.local_addr()?);
-    axum::serve(listener, router(state)).await?;
+    // the peer address tells the sign-in code whether a request comes from this computer
+    axum::serve(listener, router(state).into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
     Ok(())
 }
 
@@ -238,6 +254,31 @@ async fn cache_headers(req: axum::extract::Request, next: axum::middleware::Next
         if !res.headers().contains_key(header::CACHE_CONTROL) {
             res.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static(v));
         }
+    }
+    res
+}
+
+/// What the page may load: our own scripts (plus Windy's and Leaflet's for the Windy view),
+/// styles inline (Svelte sets style attributes), map tiles and weather from anywhere over
+/// HTTPS, MapLibre's blob workers. No framing, no plugins, no inline scripts.
+const CSP: &str = "default-src 'self'; script-src 'self' https://*.windy.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://*.windy.com https://unpkg.com; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https:; worker-src 'self' blob:; child-src 'self' blob:; frame-src https://*.windy.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
+/// Headers that make the app safer to put on the internet.
+async fn security_headers(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let https = auth::is_https(req.headers());
+    let mut res = next.run(req).await;
+    let h = res.headers_mut();
+    let mut put = |k: &'static str, v: &'static str| {
+        h.entry(k).or_insert(header::HeaderValue::from_static(v));
+    };
+    put("content-security-policy", CSP);
+    put("x-content-type-options", "nosniff");
+    put("x-frame-options", "DENY");
+    put("referrer-policy", "same-origin");
+    put("permissions-policy", "camera=(), microphone=(), payment=(), usb=()");
+    put("cross-origin-opener-policy", "same-origin");
+    if https {
+        put("strict-transport-security", "max-age=31536000");
     }
     res
 }
@@ -294,6 +335,63 @@ async fn resolve(State(s): S, Query(q): Query<Ids>) -> ApiResult<Json<Value>> {
         out.push(json!({"token": tok, "place": p}));
     }
     Ok(Json(Value::Array(out)))
+}
+
+/// Airway identifiers: Victor (V), RNAV T, jet (J) and Q routes, colored airways.
+pub fn is_airway(tok: &str) -> bool {
+    let mut c = tok.chars();
+    matches!(c.next(), Some('V' | 'T' | 'J' | 'Q' | 'A' | 'B' | 'G' | 'R')) && tok.len() >= 2 && tok.len() <= 5 && c.all(|x| x.is_ascii_digit())
+}
+
+/// Resolve a route string ("KNYL BZA 3300N11400W KPHX", "KSDL PXR V327 FLG KGCN"): ambiguous
+/// fixes pick the one nearest the previous point, and an airway between two points expands to
+/// the fixes along it. Returns the points and what couldn't be resolved (with the reason).
+pub fn resolve_route(data: &Data, text: &str) -> (Vec<db::Place>, Vec<String>) {
+    let mut out: Vec<db::Place> = Vec::new();
+    let mut missing = Vec::new();
+    let mut prev: Option<(f64, f64)> = None;
+    let toks: Vec<String> = text.to_uppercase().split([' ', ',', '\n', '\t']).filter(|t| !t.is_empty() && *t != "DCT").map(String::from).collect();
+    let mut pending_airway: Option<String> = None;
+    for tok in toks {
+        if is_airway(&tok) && data.db.resolve(&tok, prev).ok().flatten().is_none() {
+            if !data.db.has_airways() {
+                missing.push(format!("{tok} (airways need an updated data pack: Settings, Chart data)"));
+            } else if out.is_empty() {
+                missing.push(format!("{tok} (an airway needs a fix before it)"));
+            } else {
+                pending_airway = Some(tok);
+            }
+            continue;
+        }
+        match data.db.resolve(&tok, prev) {
+            Ok(Some(p)) => {
+                if let (Some(awy), Some(last)) = (pending_airway.take(), out.last()) {
+                    match data.db.airway_between(&awy, (&last.id, last.lat, last.lon), &p.id) {
+                        Ok(Some(points)) => out.extend(points),
+                        _ => missing.push(format!("{awy} (doesn't connect {} and {})", last.id, p.id)),
+                    }
+                }
+                prev = Some((p.lat, p.lon));
+                out.push(p);
+            }
+            _ => missing.push(tok.to_string()),
+        }
+    }
+    if let Some(awy) = pending_airway {
+        missing.push(format!("{awy} (an airway needs a fix after it)"));
+    }
+    (out, missing)
+}
+
+#[derive(Deserialize)]
+struct RouteQ {
+    text: String,
+}
+/// A whole route string, airways expanded: {"places", "missing"}.
+async fn route_text(State(s): S, Query(q): Query<RouteQ>) -> ApiResult<Json<Value>> {
+    let data = s.data()?;
+    let (places, missing) = resolve_route(&data, &q.text);
+    Ok(Json(json!({"places": places, "missing": missing})))
 }
 
 #[derive(Deserialize)]

@@ -26,51 +26,13 @@ impl RouteUi {
     }
 }
 
-/// Airway identifiers: Victor (V), RNAV T, jet (J) and Q routes, colored airways.
-pub fn is_airway(tok: &str) -> bool {
-    let mut c = tok.chars();
-    matches!(c.next(), Some('V' | 'T' | 'J' | 'Q' | 'A' | 'B' | 'G' | 'R')) && tok.len() >= 2 && tok.len() <= 5 && c.all(|x| x.is_ascii_digit())
-}
-
 /// Resolve a route string ("KNYL BZA 3300N11400W KPHX", "KSDL PXR V327 FLG KGCN");
 /// ambiguous fixes pick the one nearest the previous point. An airway between two points
 /// expands to the fixes along it.
 pub fn resolve(app: &App, text: &str) -> (Vec<Place>, Vec<String>) {
     let Ok(data) = app.be.server.try_data() else { return (vec![], text.split_whitespace().map(String::from).collect()) };
-    let mut out: Vec<Place> = Vec::new();
-    let mut missing = Vec::new();
-    let mut prev: Option<(f64, f64)> = None;
-    let toks: Vec<String> = text.to_uppercase().split([' ', ',', '\n', '\t']).filter(|t| !t.is_empty() && *t != "DCT").map(String::from).collect();
-    let mut pending_airway: Option<String> = None;
-    for tok in toks {
-        if is_airway(&tok) && data.db.resolve(&tok, prev).ok().flatten().is_none() {
-            if !data.db.has_airways() {
-                missing.push(format!("{tok} (airways need an updated data pack: Settings, Chart data)"));
-            } else if out.is_empty() {
-                missing.push(format!("{tok} (an airway needs a fix before it)"));
-            } else {
-                pending_airway = Some(tok);
-            }
-            continue;
-        }
-        match data.db.resolve(&tok, prev) {
-            Ok(Some(p)) => {
-                if let (Some(awy), Some(last)) = (pending_airway.take(), out.last()) {
-                    match data.db.airway_between(&awy, (&last.id, last.lat, last.lon), &p.id) {
-                        Ok(Some(points)) => out.extend(points.iter().map(Place::from_server)),
-                        _ => missing.push(format!("{awy} (doesn't connect {} and {})", last.id, p.id)),
-                    }
-                }
-                prev = Some((p.lat, p.lon));
-                out.push(Place::from_server(&p));
-            }
-            _ => missing.push(tok.to_string()),
-        }
-    }
-    if let Some(awy) = pending_airway {
-        missing.push(format!("{awy} (an airway needs a fix after it)"));
-    }
-    (out, missing)
+    let (places, missing) = flightplan_server::resolve_route(&data, text);
+    (places.iter().map(Place::from_server).collect(), missing)
 }
 
 /// Open a Garmin .fpl or GPX file. Named points are matched to the database when one with

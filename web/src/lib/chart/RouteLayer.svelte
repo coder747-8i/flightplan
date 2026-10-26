@@ -2,9 +2,9 @@
   // Draws the active route (magenta great-circle line, nodes, leg labels, TOC/TOD) and handles
   // editing: drag a waypoint to move it, drag the line to rubber-band in a new waypoint, or
   // click the map while "add points" is on. Dropped points snap to nearby airports/navaids/fixes.
+  // View only (route.locked) and the ruler turn editing off.
   import type { GeoJSONSource, Map as MLMap, MapMouseEvent } from 'maplibre-gl'
   import { onMount } from 'svelte'
-  import type { Place } from '../api'
   import { route } from '../stores/route.svelte'
   import { plan } from '../stores/plan.svelte'
   import { app } from '../stores/app.svelte'
@@ -12,7 +12,8 @@
   import { variation, deg } from '../nav/navlog'
   import { mapRef } from './mapRef'
   import { DAY, NIGHT } from './palette'
-  import { coordId } from '../io/flightplan'
+  import { snapPlace } from './snap'
+  import { ruler } from './ruler.svelte'
 
   let map: MLMap | undefined
   let ready = $state(0)
@@ -110,7 +111,7 @@
     const w = route.waypoints
     const feats: GeoJSON.Feature[] = []
     if (w.length >= 2) feats.push({ type: 'Feature', properties: { t: 'line' }, geometry: { type: 'LineString', coordinates: greatCircle(route.path, 5) } })
-    w.forEach((p, i) => feats.push({ type: 'Feature', properties: { t: 'node', i, label: p.id }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } }))
+    w.forEach((p, i) => feats.push({ type: 'Feature', properties: { t: 'node', i, label: p.fuelStop ? `${p.id} · fuel stop` : p.id }, geometry: { type: 'Point', coordinates: [p.lon, p.lat] } }))
     for (let i = 1; i < w.length; i++) {
       const a = w[i - 1]
       const b = w[i]
@@ -141,26 +142,7 @@
     ;(map?.getSource('route') as GeoJSONSource | undefined)?.setData(fc)
   })
 
-  /** nearest chart feature (airport > navaid > VFR waypoint > fix) under the pointer */
-  function snap(e: { point: { x: number; y: number }; lngLat: { lng: number; lat: number } }): Place {
-    const r = 14
-    const hits = map!.queryRenderedFeatures([[e.point.x - r, e.point.y - r], [e.point.x + r, e.point.y + r]], {
-      layers: ['apt-public', 'apt-private', 'apt-heli', 'nav-symbol', 'fix-vfr', 'fix-ifr'].filter((l) => map!.getLayer(l)),
-    })
-    const order = ['airports', 'navaids', 'fixes']
-    hits.sort((a, b) => order.indexOf(a.sourceLayer!) - order.indexOf(b.sourceLayer!))
-    const h = hits[0]
-    if (h && h.geometry.type === 'Point') {
-      const pr = h.properties as any
-      const [lon, lat] = h.geometry.coordinates
-      if (h.sourceLayer === 'airports') return { kind: 'airport', id: pr.icao || pr.id, name: pr.name, detail: '', lat, lon }
-      if (h.sourceLayer === 'navaids') return { kind: 'navaid', id: pr.id, name: pr.name, detail: `${pr.type} ${pr.freq}`, lat, lon }
-      return { kind: 'fix', id: pr.id, name: pr.id, detail: pr.vfr ? 'VFR waypoint' : 'Fix', lat, lon }
-    }
-    const { lng, lat } = e.lngLat
-    const id = coordId(lat, lng)
-    return { kind: 'coord', id, name: 'User waypoint', detail: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, lat, lon: lng }
-  }
+  const snap = (e: Parameters<typeof snapPlace>[1]) => snapPlace(map!, e)
 
   function setDragLine(lngLat: [number, number] | null) {
     const src = map?.getSource('route-drag') as GeoJSONSource | undefined
@@ -202,6 +184,7 @@
       map.on('styledata', () => install())
 
       map.on('mousedown', 'route-node', (e) => {
+        if (route.locked || ruler.on) return
         e.preventDefault()
         const i = (e.features?.[0]?.properties as any)?.i
         if (i == null) return
@@ -209,7 +192,7 @@
         map!.dragPan.disable()
       })
       map.on('mousedown', 'route-line', (e) => {
-        if (drag || map!.queryRenderedFeatures(e.point, { layers: ['route-node'] }).length) return
+        if (route.locked || ruler.on || drag || map!.queryRenderedFeatures(e.point, { layers: ['route-node'] }).length) return
         e.preventDefault()
         drag = { mode: 'insert', index: legIndexAt(e.lngLat.lng, e.lngLat.lat), lngLat: [e.lngLat.lng, e.lngLat.lat] }
         map!.dragPan.disable()
@@ -239,9 +222,9 @@
         }
         mapRef.suppressClick = true
       })
-      map.on('mouseenter', 'route-node', () => (map!.getCanvas().style.cursor = 'grab'))
+      map.on('mouseenter', 'route-node', () => !route.locked && !ruler.on && (map!.getCanvas().style.cursor = 'grab'))
       map.on('mouseleave', 'route-node', () => (map!.getCanvas().style.cursor = ''))
-      map.on('mouseenter', 'route-line', () => (map!.getCanvas().style.cursor = 'copy'))
+      map.on('mouseenter', 'route-line', () => !route.locked && !ruler.on && (map!.getCanvas().style.cursor = 'copy'))
       map.on('mouseleave', 'route-line', () => {
         map!.getCanvas().style.cursor = ''
         if (plan.hover?.from === 'map') plan.hover = null
@@ -257,7 +240,11 @@
           mapRef.suppressClick = false
           return true
         }
-        if (route.editing) {
+        if (ruler.on) {
+          ruler.add(snap(e))
+          return true
+        }
+        if (route.editing && !route.locked) {
           route.add(snap(e))
           return true
         }

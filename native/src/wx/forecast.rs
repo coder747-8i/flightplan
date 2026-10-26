@@ -362,68 +362,11 @@ impl StationWx {
     }
 }
 
-/// Fetch METAR, TAF and NBM for an airport, falling back to the nearest reporting station
-/// within 30 NM when the airport has none.
+/// METAR, TAF and NBM for an airport (the server library falls back to the nearest reporting
+/// station within 30 NM when the airport has none).
 async fn fetch_station(st: std::sync::Arc<flightplan_server::AppState>, airport: String, icao: String, lat: f64, lon: f64) -> StationWx {
-    let mut candidates: Vec<(String, f64)> = vec![(icao, 0.0)];
-    if let Ok(data) = st.try_data() {
-        if let Ok(near) = data.db.airports_near(lat, lon, 30.0, false) {
-            for (p, d) in near.into_iter().take(12) {
-                let id = if p.id.len() == 3 && p.id.chars().all(|c| c.is_ascii_alphabetic()) { format!("K{}", p.id) } else { p.id.clone() };
-                if !candidates.iter().any(|c| c.0 == id) && id.len() == 4 && id.chars().all(|c| c.is_ascii_alphanumeric()) {
-                    candidates.push((id, d));
-                }
-            }
-        }
-    }
-    let mut out = StationWx { airport: airport.clone(), station: candidates[0].0.clone(), ..Default::default() };
-    // METAR / TAF for the first few candidates in one request each
-    let ids: Vec<String> = candidates.iter().take(8).map(|c| c.0.clone()).collect();
-    let metars = flightplan_server::wx::metars(&st, Some(&ids.join(",")), None).await.unwrap_or(Value::Null);
-    let tafs = flightplan_server::wx::tafs(&st, &ids.join(",")).await.unwrap_or(Value::Null);
-    let find = |v: &Value, id: &str| v.as_array().and_then(|a| a.iter().find(|x| x["icaoId"].as_str() == Some(id)).cloned());
-    // the closest candidate that reports, preferring one with a TAF
-    let pick = candidates.iter().take(8).find(|c| find(&tafs, &c.0).is_some()).or_else(|| candidates.iter().take(8).find(|c| find(&metars, &c.0).is_some()));
-    if let Some((id, d)) = pick {
-        out.station = id.clone();
-        out.offset_nm = *d;
-    }
-    out.metar = find(&metars, &out.station);
-    out.taf = find(&tafs, &out.station);
-    // NBS and NBE in parallel; NBM covers far more sites than report METARs, so try the chosen
-    // station, then the other candidates
-    let tries: Vec<(String, f64)> = std::iter::once((out.station.clone(), out.offset_nm)).chain(candidates.iter().take(5).cloned()).collect();
-    let nbm = |model: &'static str| {
-        let st = st.clone();
-        let tries = tries.clone();
-        async move {
-            for (id, d) in tries {
-                let url = format!("https://mesonet.agron.iastate.edu/api/1/mos.json?station={id}&model={model}");
-                if let Ok(v) = st.cache.get_json(&url, Duration::from_secs(3600)).await {
-                    let rows = parse_nbm(&v);
-                    if !rows.is_empty() {
-                        return Some((id, d, rows));
-                    }
-                }
-            }
-            None
-        }
-    };
-    let (nbs, nbe) = tokio::join!(nbm("NBS"), nbm("NBE"));
-    for (i, r) in [nbs, nbe].into_iter().enumerate() {
-        if let Some((id, d, rows)) = r {
-            if out.metar.is_none() && out.taf.is_none() {
-                out.station = id;
-                out.offset_nm = d;
-            }
-            if i == 0 {
-                out.nbs = rows;
-            } else {
-                out.nbe = rows;
-            }
-        }
-    }
-    out
+    let r = flightplan_server::forecast::station(st, airport, icao, lat, lon).await;
+    StationWx { airport: r.airport, station: r.station, offset_nm: r.offset_nm, metar: r.metar, taf: r.taf, nbs: r.nbs.as_ref().map(parse_nbm).unwrap_or_default(), nbe: r.nbe.as_ref().map(parse_nbm).unwrap_or_default() }
 }
 
 /// Departure / destination forecasts and the official outlooks the route crosses, refreshed

@@ -1,4 +1,5 @@
-//! Small JSON documents the UI saves on the server (aircraft profiles, app preferences), so
+//! Small JSON documents the UI saves on the server (aircraft profiles, app preferences, saved
+//! flight plans, personal minimums), so
 //! they survive a cleared browser cache and are shared by every device that opens the app.
 
 use crate::{ApiError, ApiResult, AppState};
@@ -11,7 +12,7 @@ use axum::{
 use serde_json::Value;
 use std::sync::Arc;
 
-const KEYS: &[&str] = &["aircraft", "prefs"];
+const KEYS: &[&str] = &["aircraft", "prefs", "plans", "minimums"];
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new().route("/user/{key}", get(read).put(write))

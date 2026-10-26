@@ -32,7 +32,7 @@
   function pick(p: Place, addToRoute = false) {
     open = false
     q = ''
-    if (addToRoute) {
+    if (addToRoute && !route.locked) {
       route.add(p)
       app.panel = 'route'
     }

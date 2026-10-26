@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RulerButton from '../chart/RulerButton.svelte'
   import { Mountain } from '@lucide/svelte'
   import { app } from '../stores/app.svelte'
 
@@ -43,11 +44,14 @@
   ]
 </script>
 
-<div class="alt" data-tour="altitude">
-  <button class="pill glass" class:on={app.altitude.enabled} onclick={() => (open = !open)} title="Filter airspace by altitude">
-    <Mountain size={15} strokeWidth={2} />
-    <span class="num">{app.altitude.enabled ? `${fmt(app.altitude.lo)} – ${fmt(app.altitude.hi)}` : 'All altitudes'}</span>
-  </button>
+<div class="alt">
+  <div class="top">
+    <RulerButton />
+    <button class="pill glass" class:on={app.altitude.enabled} onclick={() => (open = !open)} title="Filter airspace by altitude" data-tour="altitude">
+      <Mountain size={15} strokeWidth={2} />
+      <span class="num">{app.altitude.enabled ? `${fmt(app.altitude.lo)} – ${fmt(app.altitude.hi)}` : 'All altitudes'}</span>
+    </button>
+  </div>
 
   {#if open}
     <div class="pop glass">
@@ -101,6 +105,10 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
+    gap: 8px;
+  }
+  .top {
+    display: flex;
     gap: 8px;
   }
   .pill {
@@ -206,5 +214,11 @@
     height: 28px;
     font-size: 11.5px;
     padding: 0 9px;
+  }
+  /* below the full-width search box on phones */
+  @media (max-width: 640px) {
+    .alt {
+      top: 64px;
+    }
   }
 </style>

@@ -23,6 +23,7 @@
     "@lucide/svelte": "^1.61.0",
     "geomagnetism": "^0.2.0",
     "maplibre-gl": "^6.15.0",
-    "pmtiles": "^4.5.0"
+    "pmtiles": "^4.5.0",
+    "qrcode-generator": "^1.4.4"
   }
 }

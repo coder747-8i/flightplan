@@ -142,7 +142,7 @@
   function down(e: PointerEvent) {
     const { py } = local(e)
     moved = false
-    if (Math.abs(py - y(route.cruise)) < 12) {
+    if (!route.locked && Math.abs(py - y(route.cruise)) < 12) {
       dragging = true
       svg!.setPointerCapture(e.pointerId)
     }
@@ -184,7 +184,7 @@
 </script>
 
 {#if route.waypoints.length >= 2}
-  <section class="drawer glass" class:closed={!app.profileOpen} data-tour="profile">
+  <section class="drawer glass" class:closed={!app.profileOpen} data-tour="profile" bind:clientHeight={app.drawerHeight}>
     <header>
       <button class="title" onclick={() => (app.profileOpen = !app.profileOpen)}>
         <Mountain size={15} /> Vertical profile
@@ -194,7 +194,7 @@
         <div class="legend">
           <span><i class="sw terrain"></i>Terrain</span>
           <span><i class="sw corridor"></i>Highest within 1 NM</span>
-          <span><i class="sw plan"></i>Planned (drag)</span>
+          <span><i class="sw plan"></i>Planned{route.locked ? '' : ' (drag)'}</span>
           {#if freezing.length}<span><Snowflake size={12} /> 0°C</span>{/if}
           <label><input type="checkbox" bind:checked={showE} /> Class E</label>
         </div>

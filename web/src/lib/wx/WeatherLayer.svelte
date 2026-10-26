@@ -1,6 +1,29 @@
 <script lang="ts" module>
   // Weather overlays on the chart. Toggled from the Weather panel; state persists per viewer.
+  // The radar and the SPC outlook follow the timeline's departure time: live NEXRAD now, HRRR
+  // forecast radar to about 48 h, then the WPC forecast charts (wx/radar.svelte.ts). Winds aloft
+  // are the NWS FB forecast at its stations for that time.
   import { save } from '../stores/app.svelte'
+  import type { WindPoint } from '../api'
+  import type { Frame } from './radar.svelte'
+
+  /** Levels of the NWS winds-aloft forecast offered on the chart: [ft, label]. */
+  export const WIND_LEVELS: [number, string][] = [[3000, '3,000 ft'], [6000, '6,000 ft'], [9000, '9,000 ft'], [12000, '12,000 ft'], [18000, 'FL180'], [24000, 'FL240'], [30000, 'FL300'], [34000, 'FL340'], [39000, 'FL390']]
+
+  /** Wind speed colour, light blue (calm) through green and amber to red (80 kt+). */
+  export function speedColor(kt: number) {
+    const stops: [number, [number, number, number]][] = [[0, [90, 160, 210]], [15, [60, 180, 120]], [30, [230, 180, 40]], [50, [230, 110, 40]], [80, [200, 40, 80]]]
+    for (let i = 1; i < stops.length; i++) {
+      const [a, ca] = stops[i - 1]
+      const [b, cb] = stops[i]
+      if (kt <= b) {
+        const f = Math.min(1, Math.max(0, (kt - a) / (b - a)))
+        const c = ca.map((x, k) => Math.round(x + (cb[k] - x) * f))
+        return `rgb(${c[0]},${c[1]},${c[2]})`
+      }
+    }
+    return 'rgb(200,40,80)'
+  }
 
   function load<T extends object>(key: string, fallback: T): T {
     try {
@@ -13,8 +36,15 @@
   }
 
   class WxState {
-    show = $state(load('wx', { radar: false, metars: true, tfr: true, sigmet: true, gairmet: false, pireps: false }))
+    show = $state(load('wx', { radar: false, metars: true, tfr: true, sigmet: true, gairmet: false, pireps: false, spc: false, winds: false }))
     radarOpacity = $state(0.65)
+    /** index into WIND_LEVELS */
+    windLevel = $state<number>(load('wxLevel', { i: 2 }).i)
+    /** what the radar layer shows for the departure time (null: nothing covers it) */
+    frame = $state.raw<Frame | null>(null)
+    radarLoading = $state(false)
+    /** every FB station */
+    fb = $state.raw<(WindPoint & { station: string })[]>([])
     tfrs = $state.raw<GeoJSON.FeatureCollection>({ type: 'FeatureCollection', features: [] })
     sigmets = $state.raw<any[]>([])
     gairmets = $state.raw<any[]>([])
@@ -25,6 +55,7 @@
   export const wx = new WxState()
   $effect.root(() => {
     $effect(() => save('wx', wx.show))
+    $effect(() => save('wxLevel', { i: wx.windLevel }))
   })
 </script>
 
@@ -34,6 +65,9 @@
   import { api } from '../api'
   import { mapRef } from '../chart/mapRef'
   import { FLT_CAT_HEX } from './format'
+  import { frameFor, products, spcFrame } from './radar.svelte'
+  import { plan } from '../stores/plan.svelte'
+  import { app } from '../stores/app.svelte'
 
   let map: MLMap | undefined
   let ready = $state(0)
@@ -47,12 +81,21 @@
   function install() {
     if (!map || map.getSource('wx-metar')) return
     const before = map.getLayer('route-casing') ? 'route-casing' : map.getLayer('as-labels-e') ? 'as-labels-e' : undefined
-    map.addSource('wx-radar', {
-      type: 'raster', tileSize: 256, attribution: 'Radar: Iowa Environmental Mesonet',
-      tiles: ['https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png'],
+    const below = map.getLayer('as-E-1200') ? 'as-E-1200' : before
+    map.addSource('wx-spc', { type: 'raster', tileSize: 256, attribution: 'NOAA SPC', tiles: [spcFrame(plan.departureTime)?.tiles ?? 'about:blank'] })
+    map.addLayer({ id: 'wx-spc', type: 'raster', source: 'wx-spc', paint: { 'raster-opacity': 0.55, 'raster-fade-duration': 0 } }, below)
+    radarKey = ''
+    addRadar(below)
+    for (const id of ['wx-tfr', 'wx-sigmet', 'wx-gairmet', 'wx-pirep', 'wx-metar', 'wx-winds']) map.addSource(id, { type: 'geojson', data: EMPTY })
+    addBarbs()
+    map.addLayer({
+      id: 'wx-winds', type: 'symbol', source: 'wx-winds',
+      layout: {
+        'icon-image': ['get', 'icon'], 'icon-rotate': ['get', 'dir'], 'icon-rotation-alignment': 'map', 'icon-allow-overlap': true, 'icon-anchor': 'bottom',
+        'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 10, 'text-anchor': 'top-left', 'text-offset': [0.5, 0.3], 'text-optional': true,
+      },
+      paint: { 'text-color': app.theme === 'night' ? '#dce2ea' : '#1e242e', 'text-halo-color': app.theme === 'night' ? '#161b22' : '#fff', 'text-halo-width': 1.2 },
     })
-    map.addLayer({ id: 'wx-radar', type: 'raster', source: 'wx-radar', paint: { 'raster-opacity': wx.radarOpacity, 'raster-fade-duration': 0 } }, map.getLayer('as-E-1200') ? 'as-E-1200' : before)
-    for (const id of ['wx-tfr', 'wx-sigmet', 'wx-gairmet', 'wx-pirep', 'wx-metar']) map.addSource(id, { type: 'geojson', data: EMPTY })
     map.addLayer({ id: 'wx-gairmet-fill', type: 'fill', source: 'wx-gairmet', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.12 } }, before)
     map.addLayer({ id: 'wx-gairmet-line', type: 'line', source: 'wx-gairmet', paint: { 'line-color': ['get', 'color'], 'line-width': 1.6, 'line-dasharray': [3, 2] } }, before)
     map.addLayer({ id: 'wx-gairmet-label', type: 'symbol', source: 'wx-gairmet', layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Bold'], 'text-size': 11, 'symbol-placement': 'line', 'symbol-spacing': 300 }, paint: { 'text-color': ['get', 'color'], 'text-halo-color': '#fff', 'text-halo-width': 1.5 } })
@@ -87,6 +130,143 @@
     ready++
   }
 
+  let radarKey = ''
+  let radarTimer: ReturnType<typeof setTimeout>
+
+  /** (Re)create the radar source for the current frame. */
+  function addRadar(beforeId?: string) {
+    if (!map) return
+    const f = wx.frame
+    const key = f?.key ?? ''
+    if (key === radarKey && map.getSource('wx-radar')) return
+    radarKey = key
+    const before = beforeId ?? (map.getLayer('wx-spc') ? 'wx-spc' : undefined)
+    if (map.getLayer('wx-radar')) map.removeLayer('wx-radar')
+    if (map.getSource('wx-radar')) map.removeSource('wx-radar')
+    if (!f) return
+    const attribution = f.kind === 'observed' || f.kind === 'hrrr' ? 'Radar: Iowa Environmental Mesonet' : 'NOAA WPC'
+    map.addSource('wx-radar', { type: 'raster', tileSize: 256, attribution, tiles: [f.tiles] })
+    map.addLayer({ id: 'wx-radar', type: 'raster', source: 'wx-radar', layout: { visibility: wx.show.radar ? 'visible' : 'none' }, paint: { 'raster-opacity': wx.radarOpacity, 'raster-fade-duration': 0 } }, before)
+    if (wx.show.radar) {
+      wx.radarLoading = true
+      clearTimeout(radarTimer)
+      radarTimer = setTimeout(() => (wx.radarLoading = false), 10_000)
+      map.once('idle', () => {
+        clearTimeout(radarTimer)
+        wx.radarLoading = false
+      })
+    }
+  }
+
+  /** Wind barb images, one per 5 kt, coloured by speed: the shaft points where the wind comes
+   *  from (up = north before rotation), barbs on the left. */
+  function addBarbs() {
+    if (!map || map.hasImage('barb-0')) return
+    const r = window.devicePixelRatio || 1
+    const W = 30
+    const H = 34
+    for (let kt = 0; kt <= 160; kt += 5) {
+      const c = document.createElement('canvas')
+      c.width = W * r
+      c.height = H * r
+      const g = c.getContext('2d')!
+      g.scale(r, r)
+      const color = speedColor(kt)
+      g.strokeStyle = color
+      g.fillStyle = color
+      g.lineWidth = 2
+      g.lineCap = 'round'
+      const x = W / 2
+      const base = H - 3
+      if (kt < 5) {
+        g.beginPath()
+        g.arc(x, base - 5, 5, 0, Math.PI * 2)
+        g.stroke()
+      } else {
+        const tip = base - 28
+        g.beginPath()
+        g.moveTo(x, base)
+        g.lineTo(x, tip)
+        g.stroke()
+        let left = kt
+        let at = 0
+        while (left >= 50) {
+          g.beginPath()
+          g.moveTo(x, tip + at)
+          g.lineTo(x, tip + at + 6)
+          g.lineTo(x - 11, tip + at)
+          g.fill()
+          at += 8
+          left -= 50
+        }
+        while (left >= 10) {
+          g.beginPath()
+          g.moveTo(x, tip + at)
+          g.lineTo(x - 11, tip + at - 3)
+          g.stroke()
+          at += 4.5
+          left -= 10
+        }
+        if (left >= 5) {
+          const y = tip + Math.max(at, 4)
+          g.beginPath()
+          g.moveTo(x, y)
+          g.lineTo(x - 6, y - 1.5)
+          g.stroke()
+        }
+      }
+      g.beginPath()
+      g.arc(x, base, 2.5, 0, Math.PI * 2)
+      g.fill()
+      map.addImage(`barb-${kt}`, g.getImageData(0, 0, W * r, H * r), { pixelRatio: r })
+    }
+  }
+
+  // the frame for the departure time
+  $effect(() => {
+    products.hrrrShort
+    products.hrrrExtended
+    products.wpcDay1End
+    wx.frame = frameFor(plan.departureTime)
+  })
+  $effect(() => {
+    ready
+    wx.frame
+    wx.show.radar
+    addRadar()
+  })
+  $effect(() => {
+    ready
+    products.spcDay1End
+    const f = spcFrame(plan.departureTime)
+    const src = map?.getSource('wx-spc') as { setTiles?: (t: string[]) => void } | undefined
+    if (f && src?.setTiles) src.setTiles([f.tiles])
+    vis(['wx-spc'], wx.show.spc && !!f)
+  })
+
+  // winds aloft at the chosen level, from the bulletin whose "for use" window covers the time
+  let fbAt = 0
+  $effect(() => {
+    if (!wx.show.winds || Date.now() - fbAt < 1800_000) return
+    fbAt = Date.now()
+    api.fbPoints().then((v) => (wx.fb = v.points)).catch(() => (fbAt = 0))
+  })
+  $effect(() => {
+    ready
+    const level = WIND_LEVELS[Math.min(wx.windLevel, WIND_LEVELS.length - 1)][0]
+    const t = plan.departureTime.getTime() / 1000
+    const feats: GeoJSON.Feature[] = []
+    for (const p of wx.fb) {
+      const l = p.levels.find((x) => x.alt === level)
+      const best = l?.times.find((x) => (x.from == null || t >= x.from) && (x.to == null || t < x.to))
+      if (!best) continue
+      const kt = Math.min(160, Math.round(best.spd / 5) * 5)
+      const label = `${String(Math.round(best.dir)).padStart(3, '0')}/${Math.round(best.spd)}${best.temp != null ? ` ${best.temp >= 0 ? '+' : ''}${Math.round(best.temp)}°` : ''}`
+      feats.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lon, p.lat] }, properties: { icon: `barb-${kt}`, dir: best.dir, label, station: p.station } })
+    }
+    setData('wx-winds', { type: 'FeatureCollection', features: feats })
+  })
+
   function vis(ids: string[], on: boolean) {
     for (const id of ids) if (map?.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none')
   }
@@ -99,6 +279,7 @@
     vis(['wx-sigmet-fill', 'wx-sigmet-line', 'wx-sigmet-label'], wx.show.sigmet)
     vis(['wx-gairmet-fill', 'wx-gairmet-line', 'wx-gairmet-label'], wx.show.gairmet)
     vis(['wx-pirep', 'wx-pirep-label'], wx.show.pireps)
+    vis(['wx-winds'], wx.show.winds)
   })
   $effect(() => {
     ready

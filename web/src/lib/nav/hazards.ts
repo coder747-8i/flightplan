@@ -1,5 +1,6 @@
 // Hazard advisor: scans the planned flight for terrain, obstacles, airspace, TFRs, weather
-// advisories, fuel, weight & balance, night arrival, density altitude and crosswind.
+// advisories, fuel, weight & balance and night arrival. Departure / destination weather is
+// judged at ETD / ETA by the go / no-go verdict (nav/verdict.ts).
 import type { ProfileObstacle, ProfileSample } from '../api'
 import type { Aircraft } from '../stores/aircraft.svelte'
 import { computeWB } from '../stores/aircraft.svelte'
@@ -7,7 +8,7 @@ import type { Crossing } from '../stores/plan.svelte'
 import type { Waypoint } from '../stores/route.svelte'
 import type { NavLog } from './navlog'
 import { sunTimes } from './sun'
-import { describeSigmet, decodeMetar } from '../wx/decode'
+import { describeSigmet } from '../wx/decode'
 
 export type Level = 'warning' | 'caution' | 'info'
 export interface Hazard {
@@ -30,8 +31,37 @@ export interface HazardInput {
   tfrs: GeoJSON.FeatureCollection
   sigmets: any[]
   gairmets: any[]
-  metars: Record<string, any>
-  runways: Record<string, { id: string; hdg: number }[]>
+  /** along-track NM of fuel stops (landings in the middle of the trip) */
+  stopDists?: number[]
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+/** The days a TFR covers (UTC midnight of each, ms), from FAA titles like "City, ST, Friday,
+ *  October 23, 2026 through Sunday, October 25, 2026 Local". null when the title has no dates
+ *  (permanent TFRs, or ones whose times are only in the NOTAM text). A lone date already in the
+ *  past is treated as unknown: some long-standing TFRs carry their issue date. */
+export function tfrDays(title: string, now = new Date()): [number, number] | null {
+  const re = /(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), ([A-Z][a-z]+) (\d{1,2}), (\d{4})/g
+  const dates: number[] = []
+  for (const m of title.matchAll(re)) {
+    const mo = MONTHS.indexOf(m[1])
+    if (mo >= 0) dates.push(Date.UTC(Number(m[3]), mo, Number(m[2])))
+  }
+  if (!dates.length) return null
+  if (dates.length === 1) {
+    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    return dates[0] < today - 2 * 86400000 ? null : [dates[0], dates[0]]
+  }
+  return [dates[0], dates[dates.length - 1]]
+}
+
+/** Whether a TFR with these days could be in effect at `t` (12 h slack covers US time zones and
+ *  "Local" vs "UTC" titles). */
+export function tfrCovers(days: [number, number] | null, t: Date) {
+  if (!days) return true
+  const h12 = 12 * 3600000
+  return t.getTime() >= days[0] - h12 && t.getTime() <= days[1] + 86399000 + h12
 }
 
 function plannedAlt(path: [number, number][], d: number) {
@@ -79,7 +109,7 @@ const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1)
 // route/weather data and not redone while the cruise altitude is dragged.
 let lateralCache: { key: unknown[]; out: Hazard[] } | null = null
 function lateral(h: HazardInput, total: number): Hazard[] {
-  const key = [h.samples, h.tfrs, h.sigmets, h.gairmets, h.departure.getTime(), h.log?.totalTime, Math.max(...h.altitudePath.map((p) => p[1])) >= 18000]
+  const key = [h.samples, h.tfrs, h.sigmets, h.gairmets, h.departure.getTime(), h.log?.totalTime, Math.max(...h.altitudePath.map((p) => p[1])) >= 18000, Math.floor(Date.now() / 300000)]
   if (lateralCache && lateralCache.key.length === key.length && lateralCache.key.every((k, i) => k === key[i])) return lateralCache.out
   const out: Hazard[] = []
   // ---- TFRs (lateral check; altitudes are in the NOTAM text) ----
@@ -99,14 +129,18 @@ function lateral(h: HazardInput, total: number): Hazard[] {
       }
     }
   }
+  const totalMin = h.log?.totalTime ?? 0
   for (const [id, { f, d }] of tfrHits) {
     const p = f.properties as any
+    // dated TFRs only count if they cover the time you'd be there
+    const when = new Date(h.departure.getTime() + (totalMin * 60000 * d) / Math.max(total, 1))
+    if (!tfrCovers(tfrDays(String(p.title ?? '')) ?? tfrDays(String(p.description ?? '')), when)) continue
     out.push({ level: 'warning', category: 'TFR', title: `Route crosses TFR ${id}${p.type ? ` (${String(p.type).toLowerCase()})` : ''}`, detail: `${p.title ?? ''} Read the NOTAM for altitudes and times.`, at: d })
   }
 
   // ---- AIRMET / SIGMET / G-AIRMET ----
   const now = Date.now() / 1000
-  const etaAt = (d: number) => h.departure.getTime() / 1000 + ((h.log!.totalTime * 60) * d) / Math.max(total, 1)
+  const etaAt = (d: number) => h.departure.getTime() / 1000 + (totalMin * 60 * d) / Math.max(total, 1)
   for (const sg of h.sigmets) {
     if (!sg.coords?.length) continue
     const ring = sg.coords.map((c: any) => [Number(c.lon), Number(c.lat)])
@@ -114,8 +148,9 @@ function lateral(h: HazardInput, total: number): Hazard[] {
     if (!overlaps(box, routeBox)) continue
     const s = h.samples.find((x) => inBox(x.lon, x.lat, box) && inRing(x.lon, x.lat, ring))
     if (!s) continue
-    const t = etaAt(s.d)
-    if (sg.validTimeTo && sg.validTimeTo < Math.min(t, now)) continue
+    // it has to be in force when you get there (and not already over)
+    const t = Math.max(etaAt(s.d), now)
+    if ((sg.validTimeTo && sg.validTimeTo < t) || (sg.validTimeFrom && sg.validTimeFrom > t + 3600)) continue
     const sev = sg.airSigmetType === 'SIGMET' || sg.hazard === 'CONVECTIVE'
     out.push({ level: sev ? 'warning' : 'caution', category: 'Weather', title: sg.hazard === 'CONVECTIVE' ? 'Convective SIGMET on your route' : `${sg.airSigmetType} for ${String(sg.hazard).toLowerCase()} on your route`, detail: describeSigmet(sg).summary.slice(1).join('. ') + '.', at: s.d })
   }
@@ -127,7 +162,12 @@ function lateral(h: HazardInput, total: number): Hazard[] {
     const box = bboxOf(ring)
     if (!overlaps(box, routeBox)) continue
     const s = h.samples.find((x) => inBox(x.lon, x.lat, box) && inRing(x.lon, x.lat, ring))
-    if (s) gHits.set(g.hazard, s.d)
+    if (!s) continue
+    // each G-AIRMET is a snapshot valid around `validTime` until the product expires
+    const t = Math.max(etaAt(s.d), now)
+    const valid = g.validTime ? Date.parse(g.validTime) / 1000 : null
+    if ((g.expireTime && t > g.expireTime) || (valid != null && t < valid - 3 * 3600)) continue
+    gHits.set(g.hazard, s.d)
   }
   const G_NAME: Record<string, string> = { IFR: 'IFR conditions', MT_OBSC: 'mountain obscuration', 'TURB-HI': 'high-altitude turbulence', 'TURB-LO': 'turbulence below FL180', ICE: 'icing', SFC_WND: 'strong surface wind', LLWS: 'low-level wind shear', M_FZLVL: 'multiple freezing levels' }
   for (const [hz, d] of gHits) {
@@ -145,9 +185,10 @@ export function analyze(h: HazardInput): Hazard[] {
   if (!h.log || h.waypoints.length < 2) return out
 
   // ---- terrain ----
+  const nearStop = (d: number, nm: number) => (h.stopDists ?? []).some((s) => Math.abs(d - s) < nm)
   let worst: { clr: number; d: number; elev: number } | null = null
   for (const s of h.samples) {
-    if (s.d < 5 || s.d > total - 5) continue
+    if (s.d < 5 || s.d > total - 5 || nearStop(s.d, 5)) continue
     const clr = plannedAlt(h.altitudePath, s.d) - s.max
     if (!worst || clr < worst.clr) worst = { clr, d: s.d, elev: s.max }
   }
@@ -156,7 +197,7 @@ export function analyze(h: HazardInput): Hazard[] {
   else if (worst && worst.clr < 1000) out.push({ level: 'caution', category: 'Terrain', title: `Less than 1,000 ft terrain clearance at ${worst.d.toFixed(0)} NM`, detail: `${Math.round(worst.clr)} ft above the highest terrain within 1 NM.`, at: worst.d })
 
   // ---- obstacles ----
-  const tall = h.obstacles.filter((o) => o.d > 2 && o.d < total - 2 && plannedAlt(h.altitudePath, o.d) - o.msl < 500)
+  const tall = h.obstacles.filter((o) => o.d > 2 && o.d < total - 2 && !nearStop(o.d, 2) && plannedAlt(h.altitudePath, o.d) - o.msl < 500)
   if (tall.length) {
     const o = tall.reduce((a, b) => (b.msl > a.msl ? b : a))
     out.push({ level: 'warning', category: 'Obstacle', title: `${tall.length} obstacle${tall.length > 1 ? 's' : ''} within 500 ft of your altitude`, detail: `Tallest: ${o.type} ${o.msl.toLocaleString()} ft MSL (${o.agl} AGL) at ${o.d.toFixed(0)} NM, ${Math.abs(o.xt).toFixed(1)} NM ${o.xt < 0 ? 'left' : 'right'} of course.`, at: o.d })
@@ -212,53 +253,31 @@ export function analyze(h: HazardInput): Hazard[] {
 
   out.push(...lateral(h, total))
 
-  // ---- destination / departure weather ----
-  const ends = [h.waypoints[0], h.waypoints[h.waypoints.length - 1]]
-  ends.forEach((w, i) => {
-    if (w?.kind !== 'airport') return
-    const id = w.id.length === 3 ? `K${w.id}` : w.id
-    const m = h.metars[id]
-    if (!m) return
-    const where = i === 0 ? 'Departure' : 'Destination'
-    const plainWx = decodeMetar(m.rawOb).filter((l) => /^(Visibility|Broken|Overcast|Sky|Wind)/.test(l) || /rain|snow|fog|mist|thunder|drizzle|haze|smoke/i.test(l)).join('. ')
-    if (m.fltCat === 'IFR' || m.fltCat === 'LIFR') out.push({ level: 'warning', category: 'Weather', title: `${where} ${id} is ${m.fltCat}`, detail: plainWx })
-    else if (m.fltCat === 'MVFR') out.push({ level: 'caution', category: 'Weather', title: `${where} ${id} is marginal VFR`, detail: plainWx })
-    // crosswind
-    const rwys = h.runways[w.id] ?? []
-    if (m.wspd && typeof m.wdir === 'number' && rwys.length && h.aircraft) {
-      const gust = m.wgst ?? m.wspd
-      const best = rwys
-        .map((r) => {
-          const a = ((m.wdir - r.hdg) * Math.PI) / 180
-          return { id: r.id, x: Math.abs(gust * Math.sin(a)), head: gust * Math.cos(a) }
-        })
-        .filter((r) => r.head > -5)
-        .sort((a, b) => a.x - b.x)[0]
-      const limit = h.aircraft.perf.maxXwind ?? 15
-      if (best && best.x > limit) out.push({ level: 'warning', category: 'Weather', title: `${where} crosswind ${Math.round(best.x)} kt on the best runway (${best.id})`, detail: `Above the ${limit} kt demonstrated crosswind for this aircraft. Wind ${m.wdir}° at ${m.wspd}${m.wgst ? ` gusting ${m.wgst}` : ''} kt.` })
-      else if (best && best.x > limit * 0.75) out.push({ level: 'caution', category: 'Weather', title: `${where} crosswind ${Math.round(best.x)} kt (runway ${best.id})`, detail: `Wind ${m.wdir}° at ${m.wspd}${m.wgst ? ` gusting ${m.wgst}` : ''} kt.` })
-    }
-    // density altitude
-    if (i === 0 && m.temp != null && m.altim && m.elev != null) {
-      const elevFt = m.elev * 3.28084
-      const pa = elevFt + (1013.25 - m.altim) * 30
-      const isa = 15 - (2 * pa) / 1000
-      const da = pa + 120 * (m.temp - isa)
-      if (da > 5000) out.push({ level: da > 8000 ? 'warning' : 'caution', category: 'Performance', title: `Density altitude ${Math.round(da / 100) * 100} ft at ${id}`, detail: `Field elevation ${Math.round(elevFt)} ft, ${Math.round(m.temp * 9 / 5 + 32)}°F. Expect longer takeoff roll and reduced climb. Check the POH charts.` })
-    }
-  })
-
-  // ---- fuel ----
+  // ---- fuel, for each flight between fuel stops ----
   const log = h.log
-  if (log.fuelAtLanding < 0) out.push({ level: 'warning', category: 'Fuel', title: 'Not enough fuel for this flight', detail: `Trip needs ${log.tripFuel.toFixed(1)} gal plus ${log.taxiFuel} taxi.` })
-  else if (log.fuelAtLanding < log.reserveFuel) out.push({ level: 'warning', category: 'Fuel', title: `Below reserve at landing (${log.fuelAtLanding.toFixed(1)} gal)`, detail: `Reserve is ${log.reserveFuel.toFixed(1)} gal (${h.aircraft?.perf.reserveMin} min).` })
-  else if (log.fuelAtLanding < log.reserveFuel * 1.5) out.push({ level: 'caution', category: 'Fuel', title: `Thin fuel margin: ${log.fuelAtLanding.toFixed(1)} gal at landing`, detail: `Reserve is ${log.reserveFuel.toFixed(1)} gal.` })
+  const reserveMin = h.aircraft?.perf.reserveMin ?? 30
+  const segs = log.segments.length ? log.segments.map((s) => ({ to: s.to, landing: s.fuelAtLanding, trip: s.tripFuel })) : [{ to: '', landing: log.fuelAtLanding, trip: log.tripFuel }]
+  const many = segs.length > 1
+  for (const { to, landing, trip } of segs) {
+    const at = many ? ` at ${to}` : ''
+    if (landing < 0) {
+      out.push({
+        level: 'warning',
+        category: 'Fuel',
+        title: many ? `Not enough fuel to reach ${to}` : 'Not enough fuel for this flight',
+        detail: `That leg needs ${trip.toFixed(1)} gal plus ${(log.taxiFuel / segs.length).toFixed(1)} taxi.${many ? '' : ' Add a fuel stop: tap the pump next to an airport in the route.'}`,
+      })
+    } else if (landing < log.reserveFuel) out.push({ level: 'warning', category: 'Fuel', title: `Below reserve${at} (${landing.toFixed(1)} gal)`, detail: `Reserve is ${log.reserveFuel.toFixed(1)} gal (${reserveMin} min).` })
+    else if (landing < log.reserveFuel * 1.5) out.push({ level: 'caution', category: 'Fuel', title: `Thin fuel margin${at}: ${landing.toFixed(1)} gal`, detail: `Reserve is ${log.reserveFuel.toFixed(1)} gal.` })
+  }
 
   for (const w of log.warnings) if (!w.startsWith('Fuel')) out.push({ level: 'info', category: 'Performance', title: w })
 
   // ---- weight & balance ----
   if (h.aircraft) {
-    const wb = computeWB(h.aircraft, log.tripFuel)
+    // the longest flight burns the most: the worst landing weight / CG shift
+    const burn = log.segments.length ? Math.max(...log.segments.map((s) => s.tripFuel)) : log.tripFuel
+    const wb = computeWB(h.aircraft, burn)
     for (const p of wb.problems) out.push({ level: 'warning', category: 'Weight & balance', title: p })
   }
 

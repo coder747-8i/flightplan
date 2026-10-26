@@ -5,8 +5,11 @@
   import { api } from '../api'
   import { route } from '../stores/route.svelte'
   import { app } from '../stores/app.svelte'
-  import { wx } from './WeatherLayer.svelte'
+  import { wx, WIND_LEVELS, speedColor } from './WeatherLayer.svelte'
   import { fltCatColor, fmtAge } from './format'
+  import { DBZ, frameLabel } from './radar.svelte'
+  import { plan } from '../stores/plan.svelte'
+  import { categoryOf, conditionsAt, summary, SOURCE_LABEL, type StationWx } from './forecast'
   import WxText from './WxText.svelte'
 
   let { windyAvailable, onWindy }: { windyAvailable: boolean; onWindy: () => void } = $props()
@@ -33,6 +36,24 @@
 
   const hours = $derived([...new Set(wx.gairmets.map((g) => g.forecastHour))].sort((a, b) => a - b))
   const activeSig = $derived(wx.sigmets.filter((s) => s.validTimeTo * 1000 > Date.now()))
+
+  // the flight at the planned time: departure at ETD, destination at ETA
+  const dep = $derived(plan.departureTime)
+  const eta = $derived(plan.log ? new Date(dep.getTime() + plan.log.totalTime * 60000) : dep)
+  const atTime = (s: StationWx | null, when: Date) => {
+    if (!s?.station) return null
+    const c = conditionsAt(s, when)
+    return { s, c, cat: c ? categoryOf(c) : null }
+  }
+  const flight = $derived(
+    route.waypoints.length >= 2
+      ? [
+          { role: 'Departure', when: dep, r: atTime(plan.dep, dep) },
+          { role: 'Arrival', when: eta, r: atTime(plan.dest, eta) },
+        ]
+      : [],
+  )
+  const wkhm = (d: Date) => d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
 </script>
 
 <PanelShell title="Weather" subtitle={wx.updated ? `Advisories updated ${wx.updated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Loading…'}>
@@ -50,9 +71,25 @@
   <div class="cats">
     {#each ['VFR', 'MVFR', 'IFR', 'LIFR'] as c}<span><i style:background={fltCatColor(c)}></i>{c}</span>{/each}
   </div>
-  <Toggle bind:checked={wx.show.radar} label="Radar (NEXRAD)" hint="Composite reflectivity, ~5 min" />
+  <Toggle
+    bind:checked={wx.show.radar}
+    label="Radar"
+    hint={wx.frame ? frameLabel(wx.frame) : 'Live NEXRAD now; on the timeline, HRRR forecast radar to about 48 h, then the WPC forecast chart (days 1-3) and precipitation forecast (days 4-5)'}
+    swatch={DBZ[2][1]}
+  />
   {#if wx.show.radar}
     <label class="slider"><span class="faint">Opacity</span><input type="range" min="0.2" max="1" step="0.05" bind:value={wx.radarOpacity} /></label>
+    {#if wx.frame?.kind === 'observed' || wx.frame?.kind === 'hrrr'}
+      <div class="dbz">{#each DBZ as [, c]}<i style:background={c}></i>{/each}<span class="faint">light → heavy</span></div>
+    {/if}
+  {/if}
+  <Toggle bind:checked={wx.show.spc} label="Convective outlook (SPC)" hint="The Storm Prediction Center's thunderstorm outlook for the timeline's day, days 1-8" swatch="#55bb55" />
+  <Toggle bind:checked={wx.show.winds} label="Winds aloft" hint="NWS winds-aloft forecast (FB) at its stations, for the timeline's time (about 24 hours ahead)" swatch={speedColor(30)} />
+  {#if wx.show.winds}
+    <label class="slider">
+      <span class="faint">Level</span>
+      <select class="field" bind:value={wx.windLevel}>{#each WIND_LEVELS as [, label], i}<option value={i}>{label}</option>{/each}</select>
+    </label>
   {/if}
   <Toggle bind:checked={wx.show.tfr} label="TFRs" hint={`${wx.tfrs.features.length} active shapes`} swatch="#d23a3a" />
   <Toggle bind:checked={wx.show.sigmet} label="AIRMETs & SIGMETs" hint={`${activeSig.length} in effect`} swatch="#e0452b" />
@@ -74,6 +111,28 @@
     {#if activeSig.length > 4}<button class="more" onclick={() => (showAllSig = !showAllSig)}>{showAllSig ? 'Show fewer' : `Show all ${activeSig.length}`}</button>{/if}
   {/if}
 
+  {#if flight.length}
+    <div class="section-title">Your flight</div>
+    {#if plan.forecastLoading && !plan.dep}<p class="faint small">Fetching forecasts…</p>{/if}
+    {#each flight as f}
+      {#if f.r}
+        <div class="at">
+          <div class="head"><b>{f.role} {f.r.s.airport}</b><span class="faint">{wkhm(f.when)}</span></div>
+          {#if f.r.c}
+            <div class="line">
+              {#if f.r.cat}<span class="cat" style:background={fltCatColor(f.r.cat)}>{f.r.cat}</span>{/if}
+              <span>{summary(f.r.c)}</span>
+            </div>
+            <div class="faint small">{SOURCE_LABEL[f.r.c.source]}{f.r.c.station !== f.r.s.airport && f.r.s.offsetNm > 1 ? ` from ${f.r.c.station} (${Math.round(f.r.s.offsetNm)} NM)` : ''}</div>
+            {#if f.r.c.tempo}<div class="faint small">{f.r.c.tempo[1]}</div>{/if}
+          {:else}
+            <div class="faint small">No forecast covers this time yet</div>
+          {/if}
+        </div>
+      {/if}
+    {/each}
+  {/if}
+
   <div class="section-title row">
     <span>Along your route</span>
     <button class="btn ghost tiny" onclick={loadRouteWx} title="Refresh"><RefreshCw size={13} class={loading ? 'spin' : ''} /></button>
@@ -92,10 +151,46 @@
       {#if r.taf}<div class="tafw"><WxText kind="taf" raw={r.taf.rawTAF} /></div>{/if}
     </div>
   {/each}
-  <p class="faint small src">Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet. Check an official briefing (1800wxbrief) before flight.</p>
+  <p class="faint small src">Sources: aviationweather.gov, FAA TFR, Iowa Environmental Mesonet (NEXRAD, HRRR, NBM), NOAA WPC and SPC, NWS winds aloft (FB). Check an official briefing (1800wxbrief) before flight.</p>
 </PanelShell>
 
 <style>
+  .dbz {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin: 0 0 6px 2px;
+    font-size: 11px;
+  }
+  .dbz i {
+    width: 22px;
+    height: 6px;
+    border-radius: 2px;
+  }
+  .dbz span {
+    margin-left: 6px;
+  }
+  .at {
+    padding: 8px 10px;
+    border-radius: 9px;
+    background: var(--surface-2);
+    margin-bottom: 6px;
+  }
+  .at .head {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .at .line {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 12px;
+    margin-top: 3px;
+  }
+  .at .cat {
+    flex: none;
+  }
   .windy {
     width: 100%;
     display: flex;

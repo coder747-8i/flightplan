@@ -1,6 +1,8 @@
 <script lang="ts">
   // API keys for Windy and the FAA NOTAM API: used by the Settings panel and the setup screen.
-  import { Check, KeyRound, Eye, EyeOff, ExternalLink, LoaderCircle, X } from '@lucide/svelte'
+  import { Check, KeyRound, Eye, EyeOff, ExternalLink, LoaderCircle, X, Mail } from '@lucide/svelte'
+  import { REQUEST_MAILTO } from '../wx/notams'
+  import { openExternal } from '../io/files'
   import { onMount } from 'svelte'
   import { config } from '../stores/config.svelte'
   import { apiFetch } from '../api'
@@ -24,13 +26,28 @@
   }
   onMount(load)
 
-  async function save(fields: Field[], clear = false) {
-    busy = true
+  /** A pasted key, cleaned: no whitespace or line breaks anywhere, no surrounding quotes, and no
+   *  "client_id:" style label copied along with it. */
+  function cleanKey(s: string) {
+    let v = s.replace(/\s+/g, '')
+    for (const label of ['client_id:', 'clientid:', 'client_secret:', 'clientsecret:', 'client_id=', 'client_secret=', 'key:', 'id:', 'secret:']) {
+      if (v.toLowerCase().startsWith(label)) v = v.slice(label.length)
+    }
+    return v.replace(/^["',;]+|["',;]+$/g, '')
+  }
+
+  async function save(fields: Field[], clear = false): Promise<boolean> {
     error = ''
+    // both NOTAM halves are needed: don't save one and leave the other missing
+    if (!clear && fields.length > 1 && !fields.every((f) => cleanKey(draft[f]) || saved[f]?.set)) {
+      error = 'Enter both the client ID and the client secret from the FAA.'
+      return false
+    }
+    busy = true
     const body: Record<string, string> = {}
     for (const f of fields) {
       if (clear) body[f] = ''
-      else if (draft[f].trim()) body[f] = draft[f].trim()
+      else if (cleanKey(draft[f])) body[f] = cleanKey(draft[f])
     }
     try {
       const r = await apiFetch('/api/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -38,11 +55,20 @@
       saved = await r.json()
       for (const f of fields) draft[f] = ''
       await config.reload()
+      return true
     } catch (e) {
       error = String(e)
+      return false
     } finally {
       busy = false
     }
+  }
+
+  /** Save, then check it straight away against the service (the Windy map key can only be
+   *  checked by Windy in the browser). */
+  async function saveAndTest(sec: (typeof sections)[number]) {
+    delete tests[sec.test]
+    if ((await save(sec.fields.map((x) => x.id))) && sec.test !== 'windyMap') test(sec.test)
   }
 
   async function test(which: 'windyMap' | 'windyPoint' | 'notam') {
@@ -58,15 +84,15 @@
   const sections: { title: string; blurb: string; link: [string, string]; test: 'windyMap' | 'windyPoint' | 'notam'; fields: { id: Field; label: string; placeholder: string }[] }[] = [
     {
       title: 'Windy map',
-      blurb: 'Shows the Windy weather map (wind, clouds, rain, icing) with your route. Create a "Map Forecast API" key and allow this address in its domain list.',
+      blurb: 'Shows the Windy weather map (wind, clouds, rain, icing) with your route. Create a "Map Forecast API" key and allow this address in its domain list. Winds aloft for the navlog come from the NWS forecast and need no key.',
       link: ['https://api.windy.com/keys', 'api.windy.com/keys'],
       test: 'windyMap',
       fields: [{ id: 'windyMap', label: 'Map Forecast API key', placeholder: 'Paste the map key' }],
     },
     {
       title: 'FAA NOTAMs',
-      blurb: 'Airport, en route, FDC and TFR NOTAMs along your route. Register a free app on the FAA API portal and copy its client ID and secret.',
-      link: ['https://api.faa.gov/s/', 'api.faa.gov'],
+      blurb: "NOTAMs for your route, the airport cards, the briefing and the go / no-go call. The FAA's NOTAM Management Service (NMS) isn't self-serve: request API access by email to notams@faa.gov, and paste the client ID and client secret they send. Older api.faa.gov NOTAM keys work too.",
+      link: ['https://nms.aim.faa.gov/', 'nms.aim.faa.gov'],
       test: 'notam',
       fields: [
         { id: 'notamId', label: 'Client ID', placeholder: 'client_id' },
@@ -81,7 +107,7 @@
     <KeyRound size={14} />
     <span>
       All optional. Keys are saved in <code>settings.json</code> in Flightplan's data folder (readable only by your user) and never shown again after saving.
-      {#if !config.desktop}Anyone who can open this app on your network can replace them, so keep it on your home network.{/if}
+      {#if !config.desktop}Only someone signed in to Flightplan can replace them.{/if}
     </span>
   </p>
   {#if error}<p class="err">{error}</p>{/if}
@@ -89,35 +115,42 @@
   {#each sections as sec}
     {@const t = tests[sec.test]}
     {@const anySet = sec.fields.some((f) => saved[f.id]?.set)}
+    {@const allSet = sec.fields.every((f) => saved[f.id]?.set)}
+    {@const passed = t && t !== 'running' ? t.ok : null}
     <section>
       <div class="head">
         <h3>{sec.title}</h3>
-        <span class="badge" class:on={sec.fields.every((f) => saved[f.id]?.set)}>
-          {#if sec.fields.every((f) => saved[f.id]?.set)}<Check size={12} /> Connected{:else if anySet}Incomplete{:else}Not set{/if}
+        <!-- "Connected" only once a test has passed -->
+        <span class="badge" class:on={allSet && passed === true} class:off={allSet && passed === false}>
+          {#if allSet && passed === true}<Check size={12} /> Connected{:else if allSet && passed === false}<X size={12} /> Not accepted{:else if allSet}Saved{:else if anySet}Incomplete{:else}Not set{/if}
         </span>
       </div>
       <p class="faint blurb">{sec.blurb} <a href={sec.link[0]} target="_blank" rel="noopener noreferrer">{sec.link[1]} <ExternalLink size={11} /></a></p>
+      {#if sec.test === 'notam'}
+        <button class="mail" onclick={() => openExternal(REQUEST_MAILTO)}><Mail size={13} /> Email the FAA for access</button>
+      {/if}
       {#each sec.fields as f}
         <label>
           <span class="faint">{f.label}{#if saved[f.id]?.set}<span class="hint"> · saved {saved[f.id].hint}</span>{/if}</span>
           <span class="inp">
             <input
               class="field mono"
-              type={reveal[f.id] ? 'text' : 'password'}
+              type={reveal[f.id] || f.id === 'notamId' ? 'text' : 'password'}
               autocomplete="off"
               spellcheck="false"
               placeholder={saved[f.id]?.set ? 'Enter a new value to replace' : f.placeholder}
               bind:value={draft[f.id]}
-              onkeydown={(e) => e.key === 'Enter' && save(sec.fields.map((x) => x.id))}
+              onkeydown={(e) => e.key === 'Enter' && saveAndTest(sec)}
             />
             <button class="btn ghost ico" onclick={() => (reveal[f.id] = !reveal[f.id])} aria-label={reveal[f.id] ? 'Hide' : 'Show'}>
               {#if reveal[f.id]}<EyeOff size={14} />{:else}<Eye size={14} />{/if}
             </button>
           </span>
+          {#if cleanKey(draft[f.id]).length}<span class="faint count">{cleanKey(draft[f.id]).length} characters entered (spaces and line breaks are removed)</span>{/if}
         </label>
       {/each}
       <div class="row">
-        <button class="btn primary" disabled={busy || !sec.fields.some((f) => draft[f.id].trim())} onclick={() => save(sec.fields.map((x) => x.id))}>Save</button>
+        <button class="btn primary" disabled={busy || !sec.fields.some((f) => draft[f.id].trim())} onclick={() => saveAndTest(sec)}>{sec.test === 'notam' ? 'Save and test' : 'Save'}</button>
         <button class="btn" disabled={!anySet || t === 'running'} onclick={() => test(sec.test)}>
           {#if t === 'running'}<LoaderCircle size={14} class="spin" />{/if} Test
         </button>
@@ -155,6 +188,24 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+  }
+  .mail {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 12px;
+    padding: 0 0 8px;
+    cursor: pointer;
+  }
+  .count {
+    font-size: 10.5px;
+  }
+  .badge.off {
+    color: var(--bad);
   }
   h3 {
     margin: 0;

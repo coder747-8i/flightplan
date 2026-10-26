@@ -8,7 +8,6 @@ use super::official::{self, Outlooks};
 use crate::backend::{Backend, Task};
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use egui::Color32;
-use serde_json::Value;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,37 +83,7 @@ impl Runs {
         if self.at.is_none_or(|t| t.elapsed().as_secs() > 600) && !self.task.pending() {
             self.at = Some(Instant::now());
             let st = be.server.clone();
-            self.task = be.spawn(async move {
-                let init = |v: Value| v["model_init_utc"].as_str().and_then(|s| DateTime::parse_from_rfc3339(s).ok()).map(|d| d.timestamp());
-                let base = "https://mesonet.agron.iastate.edu/data/gis/images/4326/hrrr";
-                let ttl = std::time::Duration::from_secs(300);
-                let a = st.cache.get_json(&format!("{base}/refd_0000.json"), ttl).await.ok().and_then(init);
-                let b = st.cache.get_json(&format!("{base}/refd_1140.json"), ttl).await.ok().and_then(init);
-                // the extended run's tiles stop short of 48 h at times: find the last hour served
-                let ok = |m: i64| {
-                    let http = st.cache.http().clone();
-                    async move {
-                        let url = format!("https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/hrrr::REFD-F{m:04}-0/4/3/5.png");
-                        matches!(http.get(url).send().await, Ok(r) if r.status().is_success())
-                    }
-                };
-                let mut last = 1080;
-                if b.is_some() {
-                    let (mut lo, mut hi) = (19i64, 47i64);
-                    if ok(lo * 60).await {
-                        while lo < hi {
-                            let mid = (lo + hi + 1) / 2;
-                            if ok(mid * 60).await {
-                                lo = mid;
-                            } else {
-                                hi = mid - 1;
-                            }
-                        }
-                        last = lo * 60;
-                    }
-                }
-                (a, b, last)
-            });
+            self.task = be.spawn(async move { flightplan_server::forecast::hrrr_runs(&st).await });
         }
         if let Some((a, b, last)) = self.task.poll() {
             self.short = a.and_then(|s| Utc.timestamp_opt(s, 0).single());

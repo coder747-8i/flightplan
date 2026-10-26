@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { X, Plus, Navigation, Phone, Globe, Fuel, Radio, PlaneLanding, Info, CloudSun, Building2 } from '@lucide/svelte'
+  import { X, Plus, Navigation, Phone, Globe, Fuel, Radio, PlaneLanding, Info, CloudSun, Building2, FileWarning } from '@lucide/svelte'
+  import NotamList from './NotamList.svelte'
+  import { config } from '../stores/config.svelte'
+  import { parse as parseNotams, type Notam } from '../wx/notams'
   import { api } from '../api'
   import { app } from '../stores/app.svelte'
   import { route } from '../stores/route.svelte'
@@ -9,7 +12,9 @@
   import WxText from '../wx/WxText.svelte'
   import { expand } from '../wx/decode'
 
-  let tab = $state<'info' | 'runways' | 'freqs' | 'wx' | 'fbo'>('info')
+  let tab = $state<'info' | 'runways' | 'freqs' | 'wx' | 'fbo' | 'notams'>('info')
+  let notams = $state<{ items: Notam[]; errors: string[] } | null>(null)
+  let notamsFor = ''
   let data = $state<any>(null)
   let error = $state('')
   let metar = $state<any>(null)
@@ -23,6 +28,8 @@
     data = null
     error = ''
     metar = taf = null
+    notams = null
+    notamsFor = ''
     api.airport(s.id).then(
       (d) => {
         data = d
@@ -35,6 +42,20 @@
   })
 
   const title = $derived(data ? data.icao || data.id : '')
+
+  // NOTAMs load when their tab opens
+  $effect(() => {
+    if (tab !== 'notams' || !data || !config.notams || notamsFor === title) return
+    notamsFor = title
+    const id = title
+    api
+      .notams({ locations: [data.icao || (data.id.length === 3 ? `K${data.id}` : data.id)] })
+      .then((v) => notamsFor === id && (notams = parseNotams(v)))
+      .catch((e) => notamsFor === id && (notams = { items: [], errors: [String(e.message ?? e)] }))
+  })
+
+  // an airport in the middle of the route can be a fuel stop
+  const stopIndex = $derived(data ? route.waypoints.findIndex((w, i) => i > 0 && i < route.waypoints.length - 1 && w.kind === 'airport' && (w.id === title || w.id === data.id)) : -1)
   const groupedFreqs = $derived.by(() => {
     if (!data) return []
     const order = ['ATIS', 'D-ATIS', 'AWOS', 'ASOS', 'CTAF', 'UNICOM', 'CD/P', 'GND/P', 'LCL/P', 'LCL/S', 'APCH/P DEP/P', 'APCH/P', 'DEP/P', 'CLASS B', 'CLASS C', 'TRSA']
@@ -72,6 +93,7 @@
   function addToRoute(mode: 'append' | 'direct') {
     if (!data) return
     const p = { kind: 'airport' as const, id: title, name: data.name, detail: `${data.city}, ${data.state}`, lat: data.lat, lon: data.lon }
+    if (route.locked) return
     if (mode === 'direct') route.replace([p])
     else route.add(p)
     app.panel = 'route'
@@ -111,10 +133,16 @@
 
       {#if data}
         <div class="actions">
-          <button class="btn primary" onclick={() => addToRoute('append')}><Plus size={15} /> Add to route</button>
-          <button class="btn" onclick={() => addToRoute('direct')} title="Start a new route here"><Navigation size={14} /> Start here</button>
+          <button class="btn primary" disabled={route.locked} onclick={() => addToRoute('append')}><Plus size={15} /> Add to route</button>
+          <button class="btn" disabled={route.locked} onclick={() => addToRoute('direct')} title="Start a new route here"><Navigation size={14} /> Start here</button>
           <button class="btn ghost icon" onclick={flyTo} title="Zoom to airport"><PlaneLanding size={15} /></button>
         </div>
+        {#if stopIndex >= 0}
+          {@const on = !!route.waypoints[stopIndex].fuelStop}
+          <button class="stop" class:on disabled={route.locked} onclick={() => route.toggleFuelStop(stopIndex)} title={on ? 'Not a fuel stop' : 'Land here, top off, go on'}>
+            <Fuel size={14} /> {on ? 'Fuel stop on your route' : 'Make this a fuel stop'}
+          </button>
+        {/if}
 
         <div class="tabs">
           <button class:on={tab === 'info'} onclick={() => (tab = 'info')}><Info size={14} />Info</button>
@@ -122,6 +150,7 @@
           <button class:on={tab === 'runways'} onclick={() => (tab = 'runways')}><PlaneLanding size={14} />Runways</button>
           <button class:on={tab === 'freqs'} onclick={() => (tab = 'freqs')}><Radio size={14} />Freqs</button>
           <button class:on={tab === 'fbo'} onclick={() => (tab = 'fbo')}><Building2 size={14} />FBO</button>
+          <button class:on={tab === 'notams'} onclick={() => (tab = 'notams')}><FileWarning size={14} />NOTAMs</button>
         </div>
 
         <div class="content scroll">
@@ -216,6 +245,8 @@
                 {/each}
               </tbody>
             </table>
+          {:else if tab === 'notams'}
+            <NotamList items={notams?.items ?? []} configured={config.notams} errors={notams?.errors ?? []} loading={config.notams && !notams} limit={30} />
           {:else if tab === 'fbo'}
             <FboList airport={data} />
           {/if}
@@ -296,6 +327,24 @@
     display: flex;
     gap: 6px;
     padding: 6px 16px 10px;
+  }
+  .stop {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 16px 8px;
+    padding: 5px 10px;
+    border-radius: 8px;
+    border: 1px dashed var(--accent);
+    background: none;
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .stop.on {
+    border-style: solid;
+    background: var(--accent-soft);
   }
   .tabs {
     display: flex;

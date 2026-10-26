@@ -21,6 +21,32 @@
   import Tour from './lib/setup/Tour.svelte'
   import { onboarding } from './lib/stores/onboarding.svelte'
   import { TriangleAlert } from '@lucide/svelte'
+  import Timeline from './lib/ui/Timeline.svelte'
+  import RulerLayer from './lib/chart/RulerLayer.svelte'
+  import { route } from './lib/stores/route.svelte'
+  import { history } from './lib/stores/history.svelte'
+  import { toast } from './lib/stores/app.svelte'
+
+  /** Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) undo and redo plan changes; L locks the plan for viewing.
+   *  Text fields keep their own undo while typing. */
+  function keys(e: KeyboardEvent) {
+    const t = document.activeElement?.tagName
+    if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || (document.activeElement as HTMLElement | null)?.isContentEditable) return
+    const cmd = e.ctrlKey || e.metaKey
+    const z = e.key === 'z' || e.key === 'Z'
+    if (cmd && z && !e.shiftKey) {
+      e.preventDefault()
+      if (route.locked) return toast('View only: press L to edit')
+      toast(history.undo() ? 'Undone' : 'Nothing to undo')
+    } else if (cmd && ((z && e.shiftKey) || e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault()
+      if (route.locked) return toast('View only: press L to edit')
+      toast(history.redo() ? 'Redone' : 'Nothing to redo')
+    } else if ((e.key === 'l' || e.key === 'L') && !cmd && !e.altKey) {
+      route.locked = !route.locked
+      toast(route.locked ? 'View only: the plan is locked (L to edit)' : 'Editing on')
+    }
+  }
 
   const windyKey = $derived(config.windyMapKey)
   let windyOpen = $state(false)
@@ -31,10 +57,13 @@
   })
 </script>
 
+<svelte:window onkeydown={keys} />
+
 <main style:--panel-offset={app.panel !== 'none' ? `${(['route', 'aircraft', 'settings'].includes(app.panel) ? 380 : 340) + 100}px` : '88px'}>
   <MapView />
   <WeatherLayer />
   <RouteLayer />
+  <RulerLayer />
   {#if windyKey && windyLoaded}<WindyView bind:open={windyOpen} apiKey={windyKey} />{/if}
   <Rail />
   <SearchBox />
@@ -46,6 +75,7 @@
   {#if app.panel === 'settings'}<SettingsPanel />{/if}
   {#if app.panel === 'help'}<HelpPanel />{/if}
   <ProfileDrawer />
+  <Timeline />
   <InfoCard />
   {#if app.panel === 'briefing'}<Briefing />{/if}
   {#if config.loaded && !onboarding.open && (!config.data || config.dataExpired)}
@@ -54,6 +84,7 @@
       {config.data ? `Chart data expired ${config.data.expires}: update it in Settings` : 'No chart data installed: open Settings to install it'}
     </button>
   {/if}
+  {#if app.toast}<div class="toast glass" role="status">{app.toast.text}</div>{/if}
   {#if app.cursor}
     <div class="coords glass num">
       {Math.abs(app.cursor.lat).toFixed(4)}°{app.cursor.lat >= 0 ? 'N' : 'S'}
@@ -95,6 +126,18 @@
     font-weight: 600;
     font-size: 12px;
     cursor: pointer;
+  }
+  .toast {
+    position: absolute;
+    top: 56px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 40;
+    padding: 8px 16px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 12.5px;
+    pointer-events: none;
   }
   @media (max-width: 640px) {
     .coords {

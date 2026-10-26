@@ -10,9 +10,12 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
 
 - `native/`: **the desktop app** (Rust + egui/eframe 0.36). It is the main product. It must
   stay native, never a webview wrapper.
-- `web/`: a Svelte 5 + MapLibre web app served by the server binary.
+- `web/`: a Svelte 5 + MapLibre web app served by the server binary. It has the same features
+  as the desktop app (see "Web app map" below); keep the two in step when adding features.
 - `server/`: crate `flightplan-server`, **a library first** (`server/src/lib.rs`), plus a thin
   axum binary (`main.rs`). The desktop app calls it directly (`flightplan_server::...`).
+  `auth.rs` locks the web server (password, sessions, setup code, throttling; security headers
+  in lib.rs); it is skipped when `cfg.host` is set (embedded) and the desktop app never serves HTTP.
 - `pipeline/`: Python + tippecanoe that build the chart data pack from the FAA's 28-day cycle
   (`build_datapack.sh`, also embedded in the app as "Build on this computer").
 - `tools/context-mcp/`: this context server.
@@ -38,7 +41,9 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
   PIREP / SIGMET to plain English), `forecast.rs` (conditions at a time: METAR, then TAF, then
   NBM via IEM), `official.rs` (WPC forecast chart / QPF and SPC outlooks from NOAA's map
   service: day boundaries, tile export URLs, what the route crosses) and `radar.rs` (the frame
-  for a time: NEXRAD, then HRRR tiles, then WPC chart days 1-3, then WPC QPF days 4-5).
+  for a time: NEXRAD, then HRRR tiles, then WPC chart days 1-3, then WPC QPF days 4-5). The
+  fetching itself (station pick + METAR / TAF / NBM, `along_route`, day-1 ends, HRRR runs) is
+  in the server library, `server/src/forecast.rs`, shared with the web app.
   **Rule from the owner: never synthesize forecasts. Show and read official products as
   published.**
 - `map/`: the chart renderer. It reads PMTiles v3 (`pmtiles.rs`) and MVT (`mvt.rs`), renders
@@ -55,6 +60,25 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
 - `io/`: `flightplan.rs` (route formats), `aircraft_file.rs` (`.fpaircraft.json`) and
   `pdf.rs`.
 - `localbuild.rs`: runs the embedded pipeline to build a data pack locally.
+
+## Web app map (`web/src/lib`)
+
+`main.ts` asks `/api/auth/status` first: signed out, it mounts `auth/Login.svelte` (sign-in, or the
+first-run `auth/SetupWalk.svelte`) and loads `App.svelte` only after sign-in, because the stores
+start calling the API as soon as they load. Code under `auth/` must not import the stores or
+`api.ts` (a 401 there reloads the page). Settings → Sign-in is `auth/SignInSettings.svelte`.
+
+The same plan logic as the desktop app, ported to TypeScript (keep them in step):
+`nav/navlog.ts` (fuel stops / segments), `nav/hazards.ts`, `nav/verdict.ts` (go / no-go),
+`wx/forecast.ts` (conditions at a time from the server's `/api/wx/station`), `wx/notams.ts`,
+`wx/radar.svelte.ts` (frame for a time, outlook days, HRRR runs). `stores/plan.svelte.ts` fetches
+and derives everything (the 5-day `windows` are computed in the background once inputs
+settle); `stores/route.svelte.ts` (fuel stops, `locked` = view only), `minimums`, `plans`
+(saved plans) and `history` (undo / redo) persist on the server via `/api/user/{key}`. UI:
+`ui/VerdictCard`, `ui/Timeline`, `ui/NotamList`, `ui/MinimumsForm`, `chart/RulerLayer` +
+`chart/ruler.svelte.ts`. Server endpoints for it: `/api/route` (airways expanded,
+`resolve_route` in lib.rs), `/api/wx/station`, `/api/wx/official`, `/api/wx/outlooks`,
+`/api/wx/hrrr`, `/api/wx/fb`, `/api/notams`.
 
 ## Data flow for a plan
 

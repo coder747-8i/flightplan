@@ -1,6 +1,7 @@
 <script lang="ts">
-  // Full-page briefing: summary, hazards, navlog, profile, weather, winds aloft, W&B and
-  // airport details. Prints cleanly (kneeboard-friendly navlog with blank ATA/fuel columns).
+  // Full-page briefing: summary, the go / no-go call, a chart snapshot, navlog, winds aloft,
+  // weather, NOTAMs, W&B and airport details. Prints cleanly (kneeboard-friendly navlog with blank
+  // ATA/fuel columns).
   import { Printer, X, ExternalLink } from '@lucide/svelte'
   import { onMount } from 'svelte'
   import { api } from '../api'
@@ -11,14 +12,17 @@
   import { fmtTime, deg, windAt } from '../nav/navlog'
   import { fltCatColor, fmtAge } from '../wx/format'
   import { mapRef } from '../chart/mapRef'
-  import HazardList from './HazardList.svelte'
+  import VerdictCard from './VerdictCard.svelte'
+  import NotamList from './NotamList.svelte'
+  import { config } from '../stores/config.svelte'
   import WBChart from './WBChart.svelte'
   import WxText from '../wx/WxText.svelte'
   import { printPage } from '../io/files'
 
   const log = $derived(plan.log)
   const ac = $derived(aircraft.active)
-  const wb = $derived(ac ? computeWB(ac, log?.tripFuel ?? 0) : null)
+  // the longest flight between fuel stops burns the most: the worst landing weight / CG shift
+  const wb = $derived(ac ? computeWB(ac, log?.segments.length ? Math.max(...log.segments.map((s) => s.tripFuel)) : (log?.tripFuel ?? 0)) : null)
   const dep = $derived(route.waypoints[0])
   const dest = $derived(route.waypoints[route.waypoints.length - 1])
   const depTime = $derived(plan.departureTime)
@@ -112,8 +116,15 @@
       </header>
 
       <section>
-        <h2>Hazards</h2>
-        <HazardList hazards={plan.hazards} />
+        <h2>Go / no-go</h2>
+        {#if plan.verdict}<VerdictCard v={plan.verdict} print />{:else}<p class="faint">Still checking weather and terrain…</p>{/if}
+        {#if log.segments.length > 1}
+          <p class="muted small stops">
+            {#each log.segments as seg, k}
+              {k === 0 ? route.waypoints[0].id : log.segments[k - 1].to} → {seg.to}: {Math.round(seg.endD - seg.startD)} NM, lands {hhmm(seg.arrive)} with {seg.fuelAtLanding.toFixed(1)} gal{k < log.segments.length - 1 ? ` · ${route.stopMinutes} min on the ground, topped off · ` : ''}
+            {/each}
+          </p>
+        {/if}
       </section>
 
       {#if mapImg}
@@ -162,7 +173,7 @@
             </tfoot>
           </table>
         </div>
-        <p class="faint small">Courses true unless marked. Variation WMM-2025 (east positive, MH = TH − E var). Winds: {plan.windSource === 'windy' ? 'Windy GFS' : 'Open-Meteo GFS'}, interpolated to altitude at each leg's ETA. Taxi {log.taxiFuel} gal not included in the leg fuel.</p>
+        <p class="faint small">Courses true unless marked. Variation WMM-2025 (east positive, MH = TH − E var). Winds: NWS winds-aloft forecast (FB), nearest station, interpolated to altitude at each leg's ETA. Taxi {log.taxiFuel} gal not included in the leg fuel.</p>
       </section>
 
       <section>
@@ -199,6 +210,16 @@
             {#if r.taf}<div class="tafw"><WxText kind="taf" raw={r.taf.rawTAF} /></div>{/if}
           </div>
         {/each}
+      </section>
+
+      <section>
+        <h2>NOTAMs</h2>
+        {#if config.notams && !plan.notamsDone}
+          <p class="faint">Loading NOTAMs…</p>
+        {:else}
+          <NotamList items={plan.notams.slice(0, 150)} configured={config.notams} errors={plan.notamErrors} print />
+        {/if}
+        {#if !config.notams}<p class="faint small">Meanwhile, use the NOTAM links above or 1800wxbrief.</p>{/if}
       </section>
 
       <section class="two">
@@ -250,6 +271,9 @@
     z-index: 30;
     background: var(--bg);
     overflow-y: auto;
+  }
+  .stops {
+    margin: 8px 0 0;
   }
   .toolbar {
     position: sticky;

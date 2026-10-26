@@ -1,7 +1,9 @@
-// Route exchange formats: the FltPlan.com flight plan fields, Garmin .fpl (Garmin avionics SD
-// cards, Garmin Pilot, ForeFlight, FltPlan Go via Garmin), and GPX; plus reading .fpl/.gpx back.
+// Route exchange formats: the FltPlan.com flight plan fields, the FltPlan Go route string with
+// its user waypoints as a KML custom-waypoint file, Garmin .fpl (Garmin avionics SD cards,
+// Garmin Pilot, ForeFlight), and GPX; plus reading .fpl/.gpx back.
 import type { Place } from '../api'
 import type { Aircraft } from '../stores/aircraft.svelte'
+import { compactIds } from '../stores/route.svelte'
 
 type Wp = Pick<Place, 'kind' | 'id' | 'name' | 'detail' | 'lat' | 'lon'>
 
@@ -21,6 +23,23 @@ export function coordId(lat: number, lon: number) {
 
 /** identifier to file: coordinates get a lat-long id; everything else keeps its id */
 const routeId = (w: Wp) => (w.kind === 'coord' ? coordId(w.lat, w.lon) : w.id.toUpperCase())
+
+/** A lat/long the way FltPlan takes it: 3430N/11230W. */
+export function fltplanCoord(lat: number, lon: number) {
+  const c = coordId(lat, lon)
+  const i = c.search(/[NS]/)
+  return i < 0 ? c : `${c.slice(0, i + 1)}/${c.slice(i + 1)}`
+}
+
+/** The identifier FltPlan (.com and Go) knows a point by: lower-48 airports with a three-
+ *  character FAA id get the K prefix (C80 -> KC80, SDL -> KSDL); lat/longs as 3430N/11230W.
+ *  Alaska and Hawaii airports keep their FAA id (their ICAO prefixes are PA / PH, not K). */
+export function fltplanId(w: Wp) {
+  if (w.kind === 'coord') return fltplanCoord(w.lat, w.lon)
+  const id = routeId(w)
+  const lower48 = w.lat > 24 && w.lat < 50 && w.lon > -125.5 && w.lon < -66
+  return w.kind === 'airport' && /^[A-Z0-9]{3}$/.test(id) && lower48 ? `K${id}` : id
+}
 
 // --- FltPlan.com ------------------------------------------------------------------------
 
@@ -42,7 +61,7 @@ const hhmm = (min: number) => `${Math.floor(min / 60)}:${String(Math.round(min %
 
 /** The values FltPlan.com's flight plan form asks for, ready to copy. */
 export function fltplanFields(wps: Wp[], cruise: number, ac: Aircraft | undefined, eteMin: number | undefined): FltPlanFields {
-  const ids = wps.map(routeId)
+  const ids = compactIds(wps, fltplanId)
   const dep = ids[0] ?? ''
   const dest = ids.length > 1 ? ids[ids.length - 1] : ''
   const mid = ids.slice(1, -1)
@@ -61,6 +80,33 @@ export function fltplanFields(wps: Wp[], cruise: number, ac: Aircraft | undefine
     fuel: endurance,
     full: ids.join(' '),
   }
+}
+
+// --- FltPlan Go ------------------------------------------------------------------------
+
+/** FltPlan Go: the route string FltPlan understands (K-prefixed airports, airways, lat/longs as
+ *  3430N/11230W), plus the lat/long points for an optional KML of custom waypoints. */
+export function fltplanGo(wps: Wp[]): { route: string; custom: [string, number, number][] } {
+  return {
+    route: compactIds(wps, fltplanId).join(' '),
+    custom: wps.filter((w) => w.kind === 'coord').map((w) => [fltplanCoord(w.lat, w.lon), w.lat, w.lon]),
+  }
+}
+
+/** KML with one Placemark per point (custom waypoints) and the route as a line. */
+export function toKml(points: [string, number, number][], line: Wp[], name: string): string {
+  const marks = points.map(([id, lat, lon]) => `  <Placemark><name>${esc(id)}</name><description>${esc(coordId(lat, lon))}</description><Point><coordinates>${lon.toFixed(6)},${lat.toFixed(6)},0</coordinates></Point></Placemark>`)
+  if (line.length >= 2) {
+    marks.push(`  <Placemark><name>${esc(name)}</name><LineString><tessellate>1</tessellate><coordinates>${line.map((p) => `${p.lon.toFixed(6)},${p.lat.toFixed(6)},0`).join(' ')}</coordinates></LineString></Placemark>`)
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+  <name>${esc(name)}</name>
+${marks.join('\n')}
+</Document>
+</kml>
+`
 }
 
 // --- Garmin .fpl ------------------------------------------------------------------------

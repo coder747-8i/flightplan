@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { Layers, Route, CloudSun, Plane, FileText, CircleHelp, Moon, Sun, Settings } from '@lucide/svelte'
-  import { app, type Panel } from '../stores/app.svelte'
+  import { Layers, Route, CloudSun, Plane, FileText, CircleHelp, Moon, Sun, Settings, Lock, LockOpen } from '@lucide/svelte'
+  import { app, toast, type Panel } from '../stores/app.svelte'
+  import { route } from '../stores/route.svelte'
 
   const items: { id: Panel; label: string; icon: typeof Layers }[] = [
     { id: 'route', label: 'Route', icon: Route },
@@ -30,6 +31,18 @@
     </button>
   {/each}
   <div class="spacer"></div>
+  <button
+    class:active={route.locked}
+    onclick={() => {
+      route.locked = !route.locked
+      toast(route.locked ? 'View only: the plan is locked (L to edit)' : 'Editing on')
+    }}
+    title={route.locked ? "View only: the plan can't be changed. Click (or L) to edit." : 'Editing. Click (or L) to lock the plan for viewing.'}
+    data-tour="rail-lock"
+  >
+    {#if route.locked}<Lock size={18} strokeWidth={1.8} />{:else}<LockOpen size={18} strokeWidth={1.8} />{/if}
+    <span>{route.locked ? 'Locked' : 'Edit'}</span>
+  </button>
   <button class:active={app.panel === 'settings'} onclick={() => toggle('settings')} title="Settings & API keys" data-tour="rail-settings">
     <Settings size={18} strokeWidth={1.8} />
     <span>Settings</span>

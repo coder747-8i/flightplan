@@ -1,6 +1,6 @@
 <script lang="ts">
   // Help: the tour, the setup screen, shortcuts and what's installed.
-  import { Sparkles, Rocket, Keyboard, Info } from '@lucide/svelte'
+  import { Sparkles, Rocket, Keyboard, Info, CircleCheck } from '@lucide/svelte'
   import PanelShell from './PanelShell.svelte'
   import { onboarding } from '../stores/onboarding.svelte'
   import { config } from '../stores/config.svelte'
@@ -21,10 +21,24 @@
     </button>
   </div>
 
+  <div class="section-title"><CircleCheck size={12} /> Go / no-go</div>
+  <p class="muted small">
+    With a route loaded, the Route panel gives a green (go), yellow (caution) or red (no-go) call for your departure time. It checks the departure, fuel-stop and
+    arrival weather (METAR within the hour, then the TAF, then NBM guidance out to about five days) against your personal minimums, crosswind on the best runway
+    against the aircraft's limit, the WPC forecast chart and SPC convective outlook areas the route crosses on the day you fly, NOTAMs, strong winds aloft over
+    mountains, terrain clearance, TFRs and prohibited / restricted areas, fuel reserve, weight & balance and night. Set your minimums under Settings. It's advice:
+    you are the pilot in command.
+  </p>
+
   <div class="section-title"><Keyboard size={12} /> Shortcuts</div>
   <dl>
     <dt><kbd>/</kbd></dt><dd>Search airports, navaids and fixes</dd>
     <dt><kbd>Enter</kbd></dt><dd>Load the route typed in the Route panel</dd>
+    <dt><kbd>Shift+Enter</kbd></dt><dd>Add a search result to the route</dd>
+    <dt><kbd>R</kbd></dt><dd>Ruler: click points to measure; Space starts a new line (up to 3); Backspace undoes a point; Esc clears</dd>
+    <dt><kbd>Ctrl+Z</kbd></dt><dd>Undo a change to the route or aircraft (Ctrl+Shift+Z or Ctrl+Y to redo)</dd>
+    <dt><kbd>L</kbd></dt><dd>View only: lock the plan so clicks can't change it</dd>
+    <dt><kbd>← →</kbd></dt><dd>On the timeline: move the departure an hour (Shift: a day)</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close dialogs and the tour</dd>
   </dl>
 
@@ -42,7 +56,7 @@
   </dl>
   <p class="faint small">
     For planning only. Flightplan is not a substitute for an official briefing (1800wxbrief.com), current charts, NOTAMs or the aircraft's POH.
-    Data: FAA NASR, FAA AIS, FAA Digital Obstacle File, aviationweather.gov, OpenStreetMap / OpenFreeMap, Mapzen terrain, Overture Maps.
+    Data: FAA NASR, FAA AIS, FAA Digital Obstacle File, aviationweather.gov, OpenStreetMap / OpenFreeMap, Mapzen terrain, Overture Maps, NOAA (NWS, WPC, SPC), Iowa Environmental Mesonet.
   </p>
 </PanelShell>
 

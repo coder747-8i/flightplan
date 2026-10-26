@@ -39,3 +39,7 @@ flightplan-context `add_note` tool; keep each note short and specific.
 
 ## Chart
 - Black hatched blobs on the chart at zoom 8-10 were hundreds of wind-turbine obstacle symbols overprinting; view.rs now thins obstacles tallest-first with a pixel grid below zoom 12.5. (2026-10-24)
+
+## Web app
+- The web app mirrors the desktop app feature for feature; plan logic is ported to TS (nav/navlog.ts, hazards.ts, verdict.ts, wx/forecast.ts, notams.ts, radar.svelte.ts). When a native feature changes, change the TS twin too. Network fetches for forecasts live once in server/src/forecast.rs (used by native and by /api/wx/station|official|outlooks|hrrr). Headless UI checks: playwright-core with ~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome and --use-angle=swiftshader --enable-unsafe-swiftshader, else the MapLibre canvas never appears. (2026-10-25) (2026-10-25)
+- The web server is password-locked (server/src/auth.rs). Anything under web/src/lib/auth runs before sign-in: never import stores, api.ts or io/files there (they hit the API, get 401 and api.ts reloads the page in a loop). Headless tests need the setup code from <data>/setup-code.txt; a fresh scratch data dir starts locked. Use `pgrep -x flightplan-serv` to stop test servers: `pkill -f <pattern>` matches the calling shell too. (2026-10-25) (2026-10-25)

@@ -36,9 +36,25 @@ export interface NavRow {
   lon: number
 }
 
+/** One flight between fuel stops (or the whole trip when there are none). */
+export interface Segment {
+  /** waypoint index where it ends */
+  toIndex: number
+  to: string
+  depart: Date
+  arrive: Date
+  /** along-track NM where it starts and ends */
+  startD: number
+  endD: number
+  tripFuel: number
+  fuelAtStart: number
+  fuelAtLanding: number
+}
+
 export interface NavLog {
   rows: NavRow[]
   totalDist: number
+  /** minutes, including ground time at fuel stops */
   totalTime: number
   tripFuel: number
   taxiFuel: number
@@ -47,6 +63,12 @@ export interface NavLog {
   tocDist: number | null
   todDist: number | null
   warnings: string[]
+  /** flights between fuel stops, in order */
+  segments: Segment[]
+  /** planned altitude along the route: [along-track NM, ft MSL] */
+  altPath: [number, number][]
+  /** minutes on the ground at fuel stops (included in totalTime) */
+  groundTime: number
 }
 
 const norm = (d: number) => ((d % 360) + 360) % 360
@@ -61,16 +83,19 @@ export function variation(lat: number, lon: number, when = new Date()) {
   }
 }
 
-/** wind at altitude (ft) from a point's level data, at the hour nearest `when` */
+/** wind at altitude (ft) from a point's level data: the forecast whose "for use" window covers
+ *  `when` (nearest valid time when there are several) */
 export function windAt(wp: WindPoint | undefined, altFt: number, when: Date): Wind | null {
   if (!wp || wp.error || !wp.levels?.length) return null
   const t = when.getTime() / 1000
   const perLevel = wp.levels
     .map((l) => {
-      if (!l.times.length) return null
-      let best = l.times[0]
-      for (const x of l.times) if (Math.abs(x.t - t) < Math.abs(best.t - t)) best = x
-      return { ...best, alt: best.alt ?? l.alt }
+      let best: (typeof l.times)[number] | null = null
+      for (const x of l.times) {
+        if ((x.from != null && t < x.from) || (x.to != null && t >= x.to)) continue
+        if (!best || Math.abs(x.t - t) < Math.abs(best.t - t)) best = x
+      }
+      return best && { dir: best.dir, spd: best.spd, temp: best.temp, alt: best.alt ?? l.alt }
     })
     .filter(Boolean) as { alt: number; dir: number; spd: number; temp: number | null }[]
   perLevel.sort((a, b) => a.alt - b.alt)
@@ -115,17 +140,83 @@ export interface NavInput {
   destElev: number
   /** winds per waypoint index (same order as waypoints); optional */
   winds?: (WindPoint | undefined)[]
+  /** fuel stops: [waypoint index, field elevation ft]; the airplane is topped off there */
+  stops?: [number, number][]
+  /** minutes on the ground at each fuel stop */
+  groundMin?: number
 }
 
+const fuelStation = (ac: Aircraft) => ac.wb.stations.find((s) => s.kind === 'fuel')
+
 /**
- * Builds the log. Climb starts at the departure field, descent ends 1,000 ft above the
- * destination; both are spread over legs as needed (TOC/TOD may fall mid-leg).
+ * Builds the log for the whole trip. Each stretch between fuel stops is its own flight: climb
+ * out, cruise, descend, land, top off to full usable fuel, wait the ground time, go again.
  */
 export function buildNavLog(inp: NavInput): NavLog {
+  const w = inp.waypoints
+  const ac = inp.aircraft
+  const stops = [...new Map((inp.stops ?? []).filter(([i]) => i > 0 && i < w.length - 1).map((s) => [s[0], s])).values()].sort((a, b) => a[0] - b[0])
+  if (w.length < 2) return buildSegment(inp, null)
+  const cuts = [0, ...stops.map((s) => s[0]), w.length - 1]
+  const st = fuelStation(ac)
+  const full = Math.min(st?.max ?? ac.usableFuel, Math.max(ac.usableFuel, 1))
+  const out: NavLog = { rows: [], totalDist: 0, totalTime: 0, tripFuel: 0, taxiFuel: 0, reserveFuel: (ac.perf.gph * ac.perf.reserveMin) / 60, fuelAtLanding: 0, tocDist: null, todDist: null, warnings: [], segments: [], altPath: [], groundTime: 0 }
+  let when = inp.departure
+  let dOff = 0
+  let tOff = 0
+  const n = cuts.length - 1
+  const elev = (i: number, fallback: number) => stops.find((s) => s[0] === i)?.[1] ?? fallback
+  for (let k = 0; k < n; k++) {
+    const a = cuts[k]
+    const b = cuts[k + 1]
+    const seg = buildSegment(
+      {
+        waypoints: w.slice(a, b + 1),
+        aircraft: ac,
+        cruise: inp.cruise,
+        departure: when,
+        depElev: k === 0 ? inp.depElev : elev(a, inp.depElev),
+        destElev: k + 1 === n ? inp.destElev : elev(b, inp.destElev),
+        winds: inp.winds?.slice(a, b + 1),
+      },
+      k === 0 ? null : full,
+    )
+    for (const r of seg.rows) out.rows.push({ ...r, cumDist: r.cumDist + dOff, cumTime: r.cumTime + tOff })
+    for (const pt of seg.altPath) out.altPath.push([pt[0] + dOff, pt[1]])
+    if (k === 0) out.tocDist = seg.tocDist
+    if (k + 1 === n) out.todDist = seg.todDist != null ? seg.todDist + dOff : null
+    const arrive = new Date(when.getTime() + seg.totalTime * 60000)
+    out.segments.push({ toIndex: b, to: w[b].id, depart: when, arrive, startD: dOff, endD: dOff + seg.totalDist, tripFuel: seg.tripFuel, fuelAtStart: seg.fuelAtLanding + seg.tripFuel, fuelAtLanding: seg.fuelAtLanding })
+    for (const wn of seg.warnings) {
+      const text = n > 1 && wn.startsWith('Fuel at landing') ? `${wn} at ${w[b].id}` : wn
+      if (!out.warnings.includes(text)) out.warnings.push(text)
+    }
+    out.totalDist += seg.totalDist
+    out.tripFuel += seg.tripFuel
+    out.taxiFuel += seg.taxiFuel
+    out.fuelAtLanding = seg.fuelAtLanding
+    dOff += seg.totalDist
+    tOff += seg.totalTime
+    when = arrive
+    if (k + 1 < n) {
+      const g = inp.groundMin ?? 0
+      tOff += g
+      out.groundTime += g
+      when = new Date(when.getTime() + g * 60000)
+    }
+  }
+  out.totalTime = tOff
+  return out
+}
+
+/** One flight from the first to the last of `inp.waypoints`. `startFuel` is the fuel on board at
+ *  engine start (null: the aircraft's loading). Climb starts at the departure field, descent
+ *  ends 1,000 ft above the destination; TOC/TOD may fall mid-leg. */
+function buildSegment(inp: NavInput, startFuel: number | null): NavLog {
   const { waypoints: w, aircraft: ac, cruise, departure } = inp
   const p = ac.perf
   const warnings: string[] = []
-  const empty: NavLog = { rows: [], totalDist: 0, totalTime: 0, tripFuel: 0, taxiFuel: p.taxiGal, reserveFuel: (p.gph * p.reserveMin) / 60, fuelAtLanding: 0, tocDist: null, todDist: null, warnings }
+  const empty: NavLog = { rows: [], totalDist: 0, totalTime: 0, tripFuel: 0, taxiFuel: p.taxiGal, reserveFuel: (p.gph * p.reserveMin) / 60, fuelAtLanding: 0, tocDist: null, todDist: null, warnings, segments: [], altPath: [], groundTime: 0 }
   if (w.length < 2) return empty
 
   const legs = w.slice(1).map((b, i) => {
@@ -137,8 +228,8 @@ export function buildNavLog(inp: NavInput): NavLog {
   // climb & descent distances (still-air estimate using phase TAS; refined by GS below)
   const climbFt = Math.max(0, cruise - inp.depElev)
   const descFt = Math.max(0, cruise - (inp.destElev + 1000))
-  const climbMin = climbFt / p.climbFpm
-  const descMin = descFt / p.descentFpm
+  const climbMin = climbFt / Math.max(p.climbFpm, 1)
+  const descMin = descFt / Math.max(p.descentFpm, 1)
   let tocD = (climbMin / 60) * p.climbTas
   let todFromEnd = (descMin / 60) * p.descentTas
   if (tocD + todFromEnd > total) {
@@ -149,7 +240,9 @@ export function buildNavLog(inp: NavInput): NavLog {
   }
   const todD = total - todFromEnd
 
-  const fuelStart = (ac.load.fuel ?? ac.usableFuel) - p.taxiGal
+  const st = fuelStation(ac)
+  const loaded = startFuel ?? (st ? ac.load[st.id] : undefined) ?? ac.usableFuel
+  const fuelStart = loaded - p.taxiGal
   const rows: NavRow[] = []
   let cumD = 0
   let cumT = 0
@@ -211,13 +304,24 @@ export function buildNavLog(inp: NavInput): NavLog {
   }
   const strongHead = rows.find((r) => r.tas - r.gs > 30)
   if (strongHead) warnings.push(`Headwind over 30 kt on ${strongHead.from}–${strongHead.to}`)
-  return { rows, totalDist: total, totalTime: cumT, tripFuel, taxiFuel: p.taxiGal, reserveFuel, fuelAtLanding, tocDist: climbFt ? tocD : null, todDist: descFt ? todD : null, warnings }
+  const top = Math.max(cruise, inp.depElev)
+  return {
+    rows, totalDist: total, totalTime: cumT, tripFuel, taxiFuel: p.taxiGal, reserveFuel, fuelAtLanding, tocDist: climbFt ? tocD : null, todDist: descFt ? todD : null, warnings,
+    segments: [], altPath: [[0, inp.depElev], [tocD, top], [todD, top], [total, inp.destElev + 1000]], groundTime: 0,
+  }
 }
 
 export function fmtTime(min: number) {
-  const h = Math.floor(min / 60)
-  const m = Math.round(min % 60)
-  return h ? `${h}:${String(m).padStart(2, '0')}` : `0:${String(m).padStart(2, '0')}`
+  let h = Math.floor(min / 60)
+  let m = Math.round(min % 60)
+  if (m === 60) {
+    h += 1
+    m = 0
+  }
+  return `${h}:${String(m).padStart(2, '0')}`
 }
+
+/** 6,500 style thousands separators */
+export const thousands = (v: number) => Math.round(v).toLocaleString('en-US')
 
 export const deg = (d: number) => String(Math.round(norm(d)) || 360).padStart(3, '0')

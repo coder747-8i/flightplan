@@ -2,9 +2,10 @@
 
 A flight planner for the US, as a native desktop app and a web app: a vector sectional with
 layers you can switch on and off and a Garmin-style altitude filter. It also has a vertical profile (terrain, obstacles,
-airspace), a navlog with winds aloft, weather (radar, METAR, TAF, PIREP, AIRMET/SIGMET,
-G-AIRMET, TFRs, Windy), a hazard advisor, weight & balance, FBO and airport info, and a
-printable briefing.
+airspace), a navlog with winds aloft and fuel stops, weather (radar and forecast radar on a
+five-day timeline, METAR, TAF, PIREP, AIRMET/SIGMET, G-AIRMET, TFRs, Windy in the web app), a
+go / no-go call against your personal minimums, NOTAMs, weight & balance, FBO and airport info,
+FltPlan Go export and a printable briefing. Both apps have the same features.
 
 **For planning only.** It is not a substitute for an official briefing, current charts,
 NOTAMs or the aircraft's POH.
@@ -135,11 +136,54 @@ python3 -I pipeline/build_airways.py
 ## Run
 
 ```bash
-./run.sh          # builds web + server, serves http://0.0.0.0:8787
+./run.sh          # builds web + server, serves http://0.0.0.0:8787 (PORT and FP_BIND change it)
 ```
 
 For development, run `npm --prefix web run dev` (port 5173, proxies `/api` and `/tiles` to 8787).
 Without built data the server starts in setup mode and the app opens its setup screen.
+
+## Sign-in
+
+The web app is locked with a password. On first start the server prints a one-time **setup
+code** (also in `data/setup-code.txt`); open the app, follow the short walkthrough, enter the
+code, and choose your name, a password (10+ characters) and, optionally, your own sign-in
+picture. Every browser then needs the password; a sign-in lasts 30 days of use (90 at most).
+Change the password, the picture, or sign out (here or everywhere) under **Settings → Sign-in**.
+Forgot it? On the server, run `./target/release/flightplan-server set-password` from `server/`
+(with `FP_ROOT=..`): it sets a new password and signs every device out.
+
+The desktop app doesn't use any of this: it has no web server.
+
+### On the internet
+
+The server is meant to sit behind an HTTPS reverse proxy. With [Caddy](https://caddyserver.com):
+
+```
+flightplan.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+and run the server with:
+
+```bash
+FP_BIND=127.0.0.1 FP_TRUST_PROXY=1 ./run.sh
+```
+
+- `FP_BIND=127.0.0.1` listens only on this machine, so nobody can skip the proxy.
+- `FP_TRUST_PROXY=1` takes the visitor's address and HTTPS from the proxy's `X-Forwarded-For`
+  / `X-Forwarded-Proto` headers (rate limits per visitor, `Secure` cookies, HSTS). Only set it
+  behind a proxy you control.
+- `FP_SECURE_COOKIES=1` marks cookies `Secure` even when HTTPS isn't visible to the server.
+
+What's in place: Argon2id password hashing (at most two checks at a time), a one-time setup
+code for the first password, back-off after 5 wrong tries per address (30 s doubling to an hour)
+plus a slow-down for everyone while many tries fail, `HttpOnly` / `SameSite=Strict` session
+cookies stored only as hashes, a custom-header check on every change (no cross-site requests),
+a Content-Security-Policy, `X-Frame-Options: DENY`, `nosniff` and a strict referrer policy.
+Every API call and chart tile needs a session; only the page, the sign-in screen and its
+picture are public. Keep the machine and Flightplan updated, and use a password you don't use
+anywhere else.
 
 ## Keys
 

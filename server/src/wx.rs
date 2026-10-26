@@ -1,6 +1,6 @@
 //! Weather + TFR endpoints. Sources: aviationweather.gov Data API (METAR, TAF, PIREP,
-//! AIRMET/SIGMET, G-AIRMET, winds-aloft text), FAA TFR geoserver, Windy Point Forecast
-//! (paid key, preferred) with Open-Meteo GFS as the fallback for winds aloft.
+//! AIRMET/SIGMET, G-AIRMET, the NWS winds-aloft forecast (FB) as text) and the FAA TFR
+//! geoserver.
 
 use crate::{ApiResult, AppState};
 use axum::{
@@ -26,6 +26,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/wx/gairmet", get(gairmet))
         .route("/wx/windtemp", get(windtemp))
         .route("/wx/winds", post(winds))
+        .route("/wx/fb", get(fb))
         .route("/tfr", get(tfr))
 }
 
@@ -131,6 +132,11 @@ async fn windtemp(State(s): S, Query(q): Query<WindTempQ>) -> ApiResult<Response
     );
     let (b, _) = s.cache.get(&url, Duration::from_secs(1800)).await?;
     Ok(raw(b, "text/plain; charset=utf-8", 600))
+}
+
+/// Every NWS FB station with its forecasts, for the winds-aloft layer.
+async fn fb(State(s): S) -> Response {
+    ([(header::CACHE_CONTROL, "public, max-age=600")], Json(fb_points(&s).await)).into_response()
 }
 
 async fn tfr(State(s): S) -> ApiResult<Response> {
