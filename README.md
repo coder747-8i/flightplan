@@ -144,31 +144,42 @@ Without built data the server starts in setup mode and the app opens its setup s
 
 ## Your own server (Proxmox LXC)
 
-One command on a Proxmox VE host makes a bare, unprivileged Debian 12 container that runs only
-Flightplan, on port **1826** of its LAN address:
+The server is compiled on your own computer into one package (Docker needed), copied to the
+Proxmox host, and installed into a bare, unprivileged Debian 12 container that runs only
+Flightplan, on port **1826** of its LAN address. Nothing is compiled on the server and nothing
+comes from GitHub.
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/coder747-8i/flightplan/main/deploy/proxmox/flightplan-lxc.sh)"
+deploy/build-package.sh                                   # → dist/flightplan-server-linux-x86_64.tar.gz
+scp dist/flightplan-server-linux-x86_64.tar.gz root@<proxmox>:
+ssh root@<proxmox>
+tar xzf flightplan-server-linux-x86_64.tar.gz
+TUNNEL_IP=<cloudflared machine> bash flightplan/deploy/flightplan-lxc.sh
 ```
 
 It prints the address and the setup code; open the address and follow the walkthrough. The
 container:
 
-- has only what Flightplan needs (no mail, cron, rsyslog, man pages or SSH: `pct enter <id>`),
-  runs the server as an unprivileged `flightplan` user under a locked-down systemd unit;
+- has only what Flightplan needs (no compilers, mail, cron, rsyslog, man pages or SSH: use
+  `pct enter <id>`), and runs the server as an unprivileged `flightplan` user under a locked-down
+  systemd unit;
 - builds the FAA chart data itself: every 6 h it checks the FAA's current 28-day cycle and, when
   it changed, downloads, builds and installs the new data, restarts, and deletes the build files
   (`journalctl -u flightplan-data`; `FORCE=1 flightplan-data-update` rebuilds now);
 - hands that data to every desktop app connected to it (Settings → Sync with a Flightplan
-  server), along with your saved plans;
-- updates with `pct exec <id> -- flightplan-update` (Flightplan and Debian packages).
+  server), along with your saved plans.
+
+**Updating**: build a new package, copy and unpack it on the Proxmox host as above, then
+`CTID=<id> UPDATE=1 bash flightplan/deploy/flightplan-lxc.sh` (keeps all data, passwords and
+settings, and applies Debian updates). Not on Proxmox? Copy the package to any Debian 12 machine
+and run `TARBALL=<package> bash flightplan/deploy/install.sh` as root (it also updates).
 
 Sizes measured on a full build: 1 GB RAM plus 512 MB swap is enough (the server idles at ~11 MB
 and stays under ~200 MB; the monthly data build peaks under ~800 MB), 8 GB disk (Debian ~0.5 GB,
 Flightplan ~0.4 GB, chart data ~0.45 GB, ~1.3 GB of temporary files during a build, plus a terrain
 cache that grows with the routes you plan). Settings: `CTID`, `CT_HOSTNAME`, `CORES`, `RAM`,
 `SWAP`, `DISK`, `STORAGE`, `BRIDGE`, `IP`/`GW`, `VLAN`, `PORT`, `TUNNEL_IP` (see the top of the
-script). Not on Proxmox? Run `deploy/lxc/install.sh` as root on any Debian 12 machine.
+script).
 
 **Cloudflare tunnel**: run `cloudflared` on any machine on the same network and point a public
 hostname at `http://<container IP>:1826`. Give the installer `TUNNEL_IP=<that machine's IP>` so

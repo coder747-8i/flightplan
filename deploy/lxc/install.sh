@@ -5,21 +5,21 @@
 #   flightplan.service        the web app and API on PORT (default 1826), all interfaces
 #   flightplan-data.timer     every 6 h: when the FAA has a new 28-day cycle, build the chart data
 #                             pack here, install it, restart, and delete the build files
-#   flightplan-update         command: update Flightplan and Debian packages
+#   flightplan-update <pkg>   command: update Flightplan from a new package, and Debian packages
 #
-# Run as root:  bash install.sh
+# Everything is precompiled in the package (deploy/build-package.sh makes it), so nothing is
+# compiled here. Run as root:
+#   TARBALL=/root/flightplan-server-linux-x86_64.tar.gz bash install.sh
+# (without TARBALL it looks for that file next to this script and in /root). Re-running it with a
+# newer package updates Flightplan and keeps all data, passwords and settings.
 # Settings (environment): PORT=1826  TUNNEL_IP=<address of the machine running the Cloudflare
-#   tunnel; only its forwarded headers are trusted>  REPO=coder747-8i/flightplan  REF=main
-#   FROM_SOURCE=1 (build the server here instead of downloading the release; needs ~2 GB RAM)
-#   TARBALL=/path/to/flightplan-server-linux-x86_64.tar.gz (install from a file you have)
+#   tunnel; only its forwarded headers are trusted>
 set -euo pipefail
 
 PORT="${PORT:-1826}"
-REPO="${REPO:-coder747-8i/flightplan}"
-REF="${REF:-main}"
 TUNNEL_IP="${TUNNEL_IP:-}"
 APP=/opt/flightplan
-RELEASE_URL="https://github.com/$REPO/releases/download/server/flightplan-server-linux-x86_64.tar.gz"
+PKG_NAME=flightplan-server-linux-x86_64.tar.gz
 export DEBIAN_FRONTEND=noninteractive
 
 say() { printf '\n\033[1;35m== %s\033[0m\n' "$*"; }
@@ -27,7 +27,14 @@ die() { echo "error: $*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
 [ -r /etc/debian_version ] || die "this is for Debian"
-[ "$(uname -m)" = x86_64 ] || [ "${FROM_SOURCE:-}" = 1 ] || die "the prebuilt server is x86_64 only; on $(uname -m) run with FROM_SOURCE=1"
+[ "$(uname -m)" = x86_64 ] || die "the package is built for x86_64; this is $(uname -m)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "${TARBALL:-}" ]; then
+  for c in "$here/$PKG_NAME" "$here/../../$PKG_NAME" "/root/$PKG_NAME"; do
+    [ -f "$c" ] && TARBALL="$c" && break
+  done
+fi
+[ -n "${TARBALL:-}" ] && [ -f "$TARBALL" ] || die "no package: set TARBALL=/path/to/$PKG_NAME (make it with deploy/build-package.sh)"
 
 say "Trimming the system"
 # a container needs none of these; journald replaces rsyslog, systemd timers replace cron
@@ -54,65 +61,32 @@ systemctl restart systemd-journald 2>/dev/null || true
 
 say "Packages"
 apt-get -qq update
-# runtime: certificates for HTTPS, Python for the data pipeline, SQLite/zlib for tippecanoe
-apt-get -y -qq install ca-certificates curl python3 python3-venv libsqlite3-0 zlib1g tzdata >/dev/null
-BUILD_DEPS="g++ make libsqlite3-dev zlib1g-dev"
+# runtime only: certificates for HTTPS, Python for the data pipeline, SQLite/zlib/libstdc++ for
+# tippecanoe. No compilers: the package is precompiled.
+apt-get -y -qq install ca-certificates curl python3 python3-venv libsqlite3-0 zlib1g libstdc++6 tzdata >/dev/null
 
 id flightplan >/dev/null 2>&1 || useradd --system --home-dir "$APP" --shell /usr/sbin/nologin flightplan
 
 say "Flightplan"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-if [ -n "${TARBALL:-}" ]; then
-  tar -C "$tmp" -xzf "$TARBALL"
-  src="$tmp/flightplan"
-elif [ "${FROM_SOURCE:-}" != 1 ] && curl -fsSL -o "$tmp/fp.tar.gz" "$RELEASE_URL"; then
-  tar -C "$tmp" -xzf "$tmp/fp.tar.gz"
-  src="$tmp/flightplan"
-else
-  echo "building from source ($REPO@$REF): takes a while and ~2 GB of memory"
-  apt-get -y -qq install $BUILD_DEPS pkg-config >/dev/null
-  curl -fsSL "https://codeload.github.com/$REPO/tar.gz/$REF" | tar -C "$tmp" -xz
-  repo="$(echo "$tmp"/flightplan-*)"
-  # toolchains live in the temporary folder and go away with it
-  export RUSTUP_HOME="$tmp/rustup" CARGO_HOME="$tmp/cargo" CARGO_BUILD_JOBS=2
-  curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --no-modify-path >/dev/null
-  node_ver=v22.12.0
-  curl -fsSL "https://nodejs.org/dist/$node_ver/node-$node_ver-linux-x64.tar.gz" | tar -C "$tmp" -xz
-  export PATH="$CARGO_HOME/bin:$tmp/node-$node_ver-linux-x64/bin:$PATH"
-  (cd "$repo/web" && npm ci --no-audit --no-fund --loglevel=error && npm run build >/dev/null)
-  (cd "$repo/server" && cargo build --release --locked -q)
-  src="$tmp/pkg"
-  mkdir -p "$src/bin" "$src/web"
-  cp "$repo/server/target/release/flightplan-server" "$src/bin/"
-  strip "$src/bin/flightplan-server" 2>/dev/null || true
-  cp -r "$repo/web/dist" "$src/web/dist"
-  cp -r "$repo/pipeline" "$src/pipeline"
-  rm -rf "$src/pipeline/.tools"
-  cp -r "$repo/deploy/lxc" "$src/deploy"
-  echo "$REF (source)" >"$src/VERSION"
-fi
+tar -C "$tmp" -xzf "$TARBALL"
+src="$tmp/flightplan"
+[ -x "$src/bin/flightplan-server" ] || die "$TARBALL isn't a Flightplan server package"
+echo "version $(cat "$src/VERSION" 2>/dev/null || echo '?')"
 mkdir -p "$APP"/{bin,web,data,tiles,work}
+# stop first when updating, so the binary can be replaced
+systemctl stop flightplan.service 2>/dev/null || true
 install -m 0755 "$src/bin/flightplan-server" "$APP/bin/flightplan-server"
-rm -rf "$APP/web/dist" "$APP/pipeline" "$APP/deploy"
+install -m 0755 "$src/bin/tippecanoe" /usr/local/bin/tippecanoe
+rm -rf "${APP:?}/web/dist" "${APP:?}/pipeline" "${APP:?}/deploy"
 cp -r "$src/web/dist" "$APP/web/dist"
 cp -r "$src/pipeline" "$APP/pipeline"
 cp -r "$src/deploy" "$APP/deploy"
 cp "$src/VERSION" "$APP/VERSION" 2>/dev/null || true
 install -m 0755 "$APP/deploy/flightplan-data-update" /usr/local/bin/flightplan-data-update
 install -m 0755 "$APP/deploy/flightplan-update" /usr/local/bin/flightplan-update
-
-say "tippecanoe (builds the chart tiles)"
-if ! command -v tippecanoe >/dev/null; then
-  apt-get -y -qq install $BUILD_DEPS >/dev/null
-  curl -fsSL https://codeload.github.com/felt/tippecanoe/tar.gz/refs/heads/main | tar -C "$tmp" -xz
-  # two compilers at most: each takes a few hundred MB, and a small container has 1 GB
-  make -C "$tmp"/tippecanoe-main -j2 tippecanoe >/dev/null 2>"$tmp/tc.log" || { tail -5 "$tmp/tc.log"; die "building tippecanoe failed"; }
-  install -m 0755 "$tmp"/tippecanoe-main/tippecanoe /usr/local/bin/tippecanoe
-fi
-# compilers aren't needed at run time
-apt-get -y -qq purge $BUILD_DEPS pkg-config >/dev/null 2>&1 || true
-apt-get -y -qq autoremove --purge >/dev/null 2>&1 || true
+tippecanoe --version >/dev/null 2>&1 || die "tippecanoe from the package doesn't run here (is this Debian 12 or newer?)"
 
 say "Python environment for the data pipeline"
 [ -x "$APP/work/.venv/bin/python" ] || python3 -m venv "$APP/work/.venv"

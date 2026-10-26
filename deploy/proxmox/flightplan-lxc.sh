@@ -1,20 +1,31 @@
 #!/usr/bin/env bash
 # Create a Flightplan container on Proxmox VE: a bare, unprivileged Debian 12 LXC that runs only
 # the Flightplan server (port 1826 on its LAN address) and rebuilds the FAA chart data itself
-# every 28-day cycle. Run on the Proxmox host as root:
+# every 28-day cycle. Everything comes from the server package (deploy/build-package.sh): copy
+# it to the Proxmox host, unpack it, and run this as root:
 #
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/coder747-8i/flightplan/main/deploy/proxmox/flightplan-lxc.sh)"
+#   scp dist/flightplan-server-linux-x86_64.tar.gz root@proxmox:
+#   ssh root@proxmox
+#   tar xzf flightplan-server-linux-x86_64.tar.gz && bash flightplan/deploy/flightplan-lxc.sh
+#
+# Update an existing container from a newer package (same steps, then):
+#   CTID=<id> UPDATE=1 bash flightplan/deploy/flightplan-lxc.sh
 #
 # Settings (environment, all optional):
 #   CTID=<next free>  CT_HOSTNAME=flightplan  CORES=2  RAM=1024 (MB)  SWAP=512 (MB)  DISK=8 (GB)
 #   STORAGE=<auto: local-lvm, else the first that takes containers>  TEMPLATE_STORAGE=local
 #   BRIDGE=vmbr0  IP=dhcp (or 192.168.1.50/24 with GW=192.168.1.1)  VLAN=<tag>
 #   PORT=1826  TUNNEL_IP=<LAN address of the machine running cloudflared>  YES=1 (don't ask)
-#   REPO=coder747-8i/flightplan  REF=main
+#   TARBALL=<the package; default: found next to this script>
 set -euo pipefail
 
-REPO="${REPO:-coder747-8i/flightplan}"
-REF="${REF:-main}"
+PKG_NAME=flightplan-server-linux-x86_64.tar.gz
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "${TARBALL:-}" ]; then
+  for c in "$here/../../$PKG_NAME" "$here/../$PKG_NAME" "$PWD/$PKG_NAME" "/root/$PKG_NAME"; do
+    [ -f "$c" ] && TARBALL="$(cd "$(dirname "$c")" && pwd)/$PKG_NAME" && break
+  done
+fi
 # not $HOSTNAME: bash sets that to the Proxmox host's own name
 CT_HOSTNAME="${CT_HOSTNAME:-flightplan}"
 CORES="${CORES:-2}"
@@ -25,13 +36,34 @@ BRIDGE="${BRIDGE:-vmbr0}"
 IP="${IP:-dhcp}"
 PORT="${PORT:-1826}"
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
-RAW="https://raw.githubusercontent.com/$REPO/$REF"
 
 say() { printf '\n\033[1;35m== %s\033[0m\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root on the Proxmox host"
 command -v pct >/dev/null && command -v pveam >/dev/null || die "this runs on a Proxmox VE host (pct and pveam not found)"
+[ -n "${TARBALL:-}" ] && [ -f "$TARBALL" ] || die "no package: put $PKG_NAME next to the flightplan folder or set TARBALL=..."
+
+# push the package into a container and run its installer
+install_into() {
+  local id="$1"
+  pct push "$id" "$TARBALL" "/root/$PKG_NAME"
+  pct exec "$id" -- env PORT="$PORT" TUNNEL_IP="${TUNNEL_IP:-}" TARBALL="/root/$PKG_NAME" \
+    bash -c "tar -C /tmp -xzf /root/$PKG_NAME flightplan/deploy/install.sh && bash /tmp/flightplan/deploy/install.sh; s=\$?; rm -rf /tmp/flightplan /root/$PKG_NAME; exit \$s"
+}
+
+if [ "${UPDATE:-}" = 1 ]; then
+  [ -n "${CTID:-}" ] || die "set CTID to the container to update"
+  pct status "$CTID" >/dev/null 2>&1 || die "no container $CTID"
+  say "Updating Flightplan in container $CTID"
+  # keep its port and tunnel setting
+  env_line="$(pct exec "$CTID" -- systemctl show flightplan.service -p Environment --value 2>/dev/null || true)"
+  PORT="$(echo "$env_line" | tr ' ' '\n' | sed -n 's/^PORT=//p')"
+  PORT="${PORT:-1826}"
+  TUNNEL_IP="${TUNNEL_IP:-$(echo "$env_line" | tr ' ' '\n' | sed -n 's/^FP_TRUSTED_PROXIES=//p')}"
+  install_into "$CTID"
+  exit 0
+fi
 
 CTID="${CTID:-$(pvesh get /cluster/nextid)}"
 pct status "$CTID" >/dev/null 2>&1 && die "container $CTID already exists (set CTID=...)"
@@ -87,12 +119,7 @@ done
 [ -n "$ctip" ] || die "container $CTID has no network address"
 
 say "Installing Flightplan in $CTID ($ctip)"
-tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
-curl -fsSL -o "$tmp" "$RAW/deploy/lxc/install.sh"
-pct push "$CTID" "$tmp" /root/flightplan-install.sh --perms 0755
-pct exec "$CTID" -- env PORT="$PORT" TUNNEL_IP="${TUNNEL_IP:-}" REPO="$REPO" REF="$REF" bash /root/flightplan-install.sh
-pct exec "$CTID" -- rm -f /root/flightplan-install.sh
+install_into "$CTID"
 
 code="$(pct exec "$CTID" -- cat /opt/flightplan/data/setup-code.txt 2>/dev/null || true)"
 cat <<EOF
@@ -103,5 +130,5 @@ Flightplan is running in container $CTID.
   Chart data:  building now (10 to 20 min): pct exec $CTID -- journalctl -fu flightplan-data
   Tunnel:      in Cloudflare Zero Trust, point a public hostname at http://$ctip:$PORT
                (cloudflared can run on any machine on this network)
-  Update:      pct exec $CTID -- flightplan-update
+  Update:      copy a newer package here, unpack it, then: CTID=$CTID UPDATE=1 bash flightplan/deploy/flightplan-lxc.sh
 EOF
