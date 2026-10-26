@@ -320,10 +320,40 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
-/// Run the blocking install steps on a worker thread and record the outcome.
-fn finish(s: Arc<AppState>, source: String, step: impl FnOnce(&AppState) -> anyhow::Result<PathBuf> + Send + 'static, cleanup: Option<PathBuf>) {
+/// Where the data pack that is installed is kept, to hand out to desktop apps (/api/datapack).
+pub fn pack_path(cfg: &Config) -> PathBuf {
+    cfg.cache_dir.parent().unwrap_or(&cfg.cache_dir).join("datapack").join("flightplan-data.zip")
+}
+
+/// Keep an installed pack's zip for /api/datapack: moved when it was our own download, copied
+/// when it belongs to someone else.
+fn keep_pack(cfg: &Config, zip: &Path, take: bool) {
+    let dest = pack_path(cfg);
+    let r = (|| -> anyhow::Result<()> {
+        std::fs::create_dir_all(dest.parent().unwrap_or(Path::new(".")))?;
+        let tmp = dest.with_extension("zip.tmp");
+        if take && std::fs::rename(zip, &tmp).is_ok() {
+        } else {
+            std::fs::copy(zip, &tmp)?;
+        }
+        std::fs::rename(&tmp, &dest)?;
+        Ok(())
+    })();
+    if let Err(e) = r {
+        tracing::warn!("couldn't keep the data pack for desktop apps: {e:#}");
+    }
+}
+
+/// Run the blocking install steps on a worker thread and record the outcome. `keep` is the zip
+/// to keep for desktop apps on success (and whether it may be moved).
+fn finish(s: Arc<AppState>, source: String, step: impl FnOnce(&AppState) -> anyhow::Result<PathBuf> + Send + 'static, cleanup: Option<PathBuf>, keep: Option<(PathBuf, bool)>) {
     tokio::task::spawn_blocking(move || {
         let r = step(&s).and_then(|stage| activate(&s, &stage, &source));
+        if r.is_ok() {
+            if let Some((zip, take)) = &keep {
+                keep_pack(&s.cfg, zip, *take);
+            }
+        }
         if let Some(p) = cleanup {
             let _ = std::fs::remove_file(p);
         }
@@ -347,6 +377,12 @@ pub fn current(s: &AppState) -> (Option<DataInfo>, Job) {
 
 /// Start downloading and installing a data pack.
 pub fn start_download(s: Arc<AppState>, url: String) -> anyhow::Result<()> {
+    start_download_with(s, url, None)
+}
+
+/// Start downloading and installing a data pack, with a device token for a Flightplan server
+/// (the desktop app getting its chart data from its own server).
+pub fn start_download_with(s: Arc<AppState>, url: String, token: Option<String>) -> anyhow::Result<()> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         anyhow::bail!("the data pack address must start with https://");
     }
@@ -354,10 +390,11 @@ pub fn start_download(s: Arc<AppState>, url: String) -> anyhow::Result<()> {
     let st = s.clone();
     tokio::spawn(async move {
         let tmp = st.cfg.cache_dir.join("pack-download.zip");
-        match fetch(&st, &url, &tmp).await {
+        match fetch(&st, &url, &tmp, token.as_deref()).await {
             Ok(()) => {
                 let cleanup = tmp.clone();
-                finish(st.clone(), url, move |s| extract(&s.cfg, &s.setup, &tmp), Some(cleanup))
+                let keep = Some((tmp.clone(), true));
+                finish(st.clone(), url, move |s| extract(&s.cfg, &s.setup, &tmp), Some(cleanup), keep)
             }
             Err(e) => {
                 let _ = tokio::fs::remove_file(&tmp).await;
@@ -372,7 +409,8 @@ pub fn start_download(s: Arc<AppState>, url: String) -> anyhow::Result<()> {
 pub fn start_zip(s: Arc<AppState>, zip: PathBuf) -> anyhow::Result<()> {
     s.setup.begin("extracting", 0, "Unpacking chart data").map_err(|e| anyhow::anyhow!(e.1.to_string()))?;
     let name = zip.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "data pack".into());
-    finish(s, name, move |s| extract(&s.cfg, &s.setup, &zip), None);
+    let keep = Some((zip.clone(), false));
+    finish(s, name, move |s| extract(&s.cfg, &s.setup, &zip), None, keep);
     Ok(())
 }
 
@@ -380,7 +418,7 @@ pub fn start_zip(s: Arc<AppState>, zip: PathBuf) -> anyhow::Result<()> {
 pub fn start_folder(s: Arc<AppState>, dir: PathBuf) -> anyhow::Result<()> {
     let files = find_in_folder(&dir).map_err(|missing| anyhow::anyhow!("{} doesn't contain the chart data (missing {})", dir.display(), missing.join(", ")))?;
     s.setup.begin("copying", 0, "Copying chart data").map_err(|e| anyhow::anyhow!(e.1.to_string()))?;
-    finish(s, dir.display().to_string(), move |s| copy_folder(&s.cfg, &s.setup, &files), None);
+    finish(s, dir.display().to_string(), move |s| copy_folder(&s.cfg, &s.setup, &files), None, None);
     Ok(())
 }
 
@@ -395,6 +433,32 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/setup/upload", post(upload))
         .route("/setup/folder", post(folder))
         .route("/setup/cancel", post(cancel))
+        .route("/datapack", get(datapack_info))
+        .route("/datapack/file", get(datapack_file))
+}
+
+/// The chart data this server has, for desktop apps that get theirs from it.
+async fn datapack_info(State(s): State<Arc<AppState>>) -> Json<Value> {
+    let p = pack_path(&s.cfg);
+    let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+    let info = s.data.read().as_ref().map(|d| d.info.clone());
+    Json(json!({
+        "available": size > 0 && info.is_some(),
+        "size": size,
+        "cycle": info.as_ref().and_then(|i| i.cycle.clone()),
+        "expires": info.as_ref().and_then(|i| i.expires.clone()),
+        "built": info.as_ref().and_then(|i| i.built.clone()),
+    }))
+}
+
+/// The data-pack zip itself (resumable).
+async fn datapack_file(State(s): State<Arc<AppState>>, req: axum::extract::Request) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    use tower::ServiceExt;
+    match tower_http::services::ServeFile::new(pack_path(&s.cfg)).oneshot(req).await {
+        Ok(r) => r.map(Body::new).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn status(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -423,8 +487,11 @@ async fn download(State(s): State<Arc<AppState>>, Json(r): Json<DownloadReq>) ->
     let st = s.clone();
     tokio::spawn(async move {
         let tmp = st.cfg.cache_dir.join("pack-download.zip");
-        match fetch(&st, &url, &tmp).await {
-            Ok(()) => finish(st.clone(), url, move |s| extract(&s.cfg, &s.setup, &tmp), Some(st.cfg.cache_dir.join("pack-download.zip"))),
+        match fetch(&st, &url, &tmp, None).await {
+            Ok(()) => {
+                let keep = Some((tmp.clone(), true));
+                finish(st.clone(), url, move |s| extract(&s.cfg, &s.setup, &tmp), Some(st.cfg.cache_dir.join("pack-download.zip")), keep)
+            }
             Err(e) => {
                 let _ = tokio::fs::remove_file(&tmp).await;
                 st.setup.set("error", 0, 0, format!("{e:#}"));
@@ -434,8 +501,12 @@ async fn download(State(s): State<Arc<AppState>>, Json(r): Json<DownloadReq>) ->
     Ok(Json(json!({"started": true})))
 }
 
-async fn fetch(s: &AppState, url: &str, to: &Path) -> anyhow::Result<()> {
-    let resp = s.setup.http.get(url).send().await.map_err(|e| anyhow::anyhow!("couldn't reach {url}: {e}"))?;
+async fn fetch(s: &AppState, url: &str, to: &Path, token: Option<&str>) -> anyhow::Result<()> {
+    let mut rq = s.setup.http.get(url);
+    if let Some(t) = token {
+        rq = rq.bearer_auth(t);
+    }
+    let resp = rq.send().await.map_err(|e| anyhow::anyhow!("couldn't reach {url}: {e}"))?;
     let status = resp.status();
     if !status.is_success() {
         if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
@@ -490,7 +561,8 @@ async fn upload(State(s): State<Arc<AppState>>, headers: HeaderMap, body: Body) 
         return Err(e.into());
     }
     let cleanup = tmp.clone();
-    finish(s.clone(), name, move |s| extract(&s.cfg, &s.setup, &tmp), Some(cleanup));
+    let keep = Some((tmp.clone(), true));
+    finish(s.clone(), name, move |s| extract(&s.cfg, &s.setup, &tmp), Some(cleanup), keep);
     Ok(Json(json!({"started": true})))
 }
 
@@ -515,7 +587,7 @@ async fn folder(State(s): State<Arc<AppState>>, Json(r): Json<FolderReq>) -> Api
         ApiError::status(StatusCode::BAD_REQUEST, format!("{} doesn't contain the chart data (missing {})", dir.display(), missing.join(", ")))
     })?;
     s.setup.begin("copying", 0, "Copying chart data")?;
-    finish(s.clone(), dir.display().to_string(), move |s| copy_folder(&s.cfg, &s.setup, &files), None);
+    finish(s.clone(), dir.display().to_string(), move |s| copy_folder(&s.cfg, &s.setup, &files), None, None);
     Ok(Json(json!({"started": true, "path": dir})))
 }
 

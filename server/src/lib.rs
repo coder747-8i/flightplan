@@ -270,7 +270,8 @@ const CSP: &str = "default-src 'self'; script-src 'self' https://*.windy.com htt
 
 /// Headers that make the app safer to put on the internet.
 async fn security_headers(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    let https = auth::is_https(req.headers());
+    let peer = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip());
+    let https = auth::is_https(req.headers(), peer);
     let mut res = next.run(req).await;
     let h = res.headers_mut();
     let mut put = |k: &'static str, v: &'static str| {

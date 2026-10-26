@@ -2,6 +2,7 @@
 
 Output: data/raw/nasr/*.csv (+ CYCLE, the effective date), data/raw/dof/DOF.CSV
 Usage: python3 -I pipeline/fetch_faa.py [YYYY-MM-DD]   (default: the current cycle)
+       python3 -I pipeline/fetch_faa.py --print-cycle   (just print the current cycle's date)
 """
 import datetime as dt
 import io
@@ -49,6 +50,9 @@ def unzip(blob: bytes, out: Path, keep) -> int:
 
 
 def main():
+    if sys.argv[1:] == ["--print-cycle"]:
+        print(current_cycle().isoformat())
+        return
     cycle = dt.date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else current_cycle()
     print("NASR cycle", cycle)
     n = unzip(get(CSV_URL.format(d=cycle)), RAW / "nasr", lambda name: name.lower().endswith(".csv"))

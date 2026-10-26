@@ -6,6 +6,8 @@ Usage: .venv/bin/python -I pipeline/fetch_overture_fbo.py [release]
 import sys
 from pathlib import Path
 
+import os
+
 import duckdb
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +26,9 @@ CATS = ("airport", "airport_terminal", "aircraft_service", "private_jet_charter"
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 con = duckdb.connect()
+# DuckDB takes ~80% of the machine's memory by default (4 GB here); this query streams fine in
+# far less, spilling to disk if it must. FP_DUCKDB_MEMORY overrides (e.g. 2GB on a big box).
+con.execute(f"SET memory_limit='{os.environ.get('FP_DUCKDB_MEMORY', '512MB')}'; SET threads=2; SET temp_directory='{OUT.parent / 'duckdb-tmp'}';")
 con.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2';")
 cats = ",".join(f"'{c}'" for c in CATS)
 con.execute(f"""

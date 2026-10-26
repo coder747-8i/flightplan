@@ -142,6 +142,39 @@ python3 -I pipeline/build_airways.py
 For development, run `npm --prefix web run dev` (port 5173, proxies `/api` and `/tiles` to 8787).
 Without built data the server starts in setup mode and the app opens its setup screen.
 
+## Your own server (Proxmox LXC)
+
+One command on a Proxmox VE host makes a bare, unprivileged Debian 12 container that runs only
+Flightplan, on port **1826** of its LAN address:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/coder747-8i/flightplan/main/deploy/proxmox/flightplan-lxc.sh)"
+```
+
+It prints the address and the setup code; open the address and follow the walkthrough. The
+container:
+
+- has only what Flightplan needs (no mail, cron, rsyslog, man pages or SSH: `pct enter <id>`),
+  runs the server as an unprivileged `flightplan` user under a locked-down systemd unit;
+- builds the FAA chart data itself: every 6 h it checks the FAA's current 28-day cycle and, when
+  it changed, downloads, builds and installs the new data, restarts, and deletes the build files
+  (`journalctl -u flightplan-data`; `FORCE=1 flightplan-data-update` rebuilds now);
+- hands that data to every desktop app connected to it (Settings → Sync with a Flightplan
+  server), along with your saved plans;
+- updates with `pct exec <id> -- flightplan-update` (Flightplan and Debian packages).
+
+Sizes measured on a full build: 1 GB RAM plus 512 MB swap is enough (the server idles at ~11 MB
+and stays under ~200 MB; the monthly data build peaks under ~800 MB), 8 GB disk (Debian ~0.5 GB,
+Flightplan ~0.4 GB, chart data ~0.45 GB, ~1.3 GB of temporary files during a build, plus a terrain
+cache that grows with the routes you plan). Settings: `CTID`, `CT_HOSTNAME`, `CORES`, `RAM`,
+`SWAP`, `DISK`, `STORAGE`, `BRIDGE`, `IP`/`GW`, `VLAN`, `PORT`, `TUNNEL_IP` (see the top of the
+script). Not on Proxmox? Run `deploy/lxc/install.sh` as root on any Debian 12 machine.
+
+**Cloudflare tunnel**: run `cloudflared` on any machine on the same network and point a public
+hostname at `http://<container IP>:1826`. Give the installer `TUNNEL_IP=<that machine's IP>` so
+the container trusts the tunnel's forwarded headers (visitor address, HTTPS) from it alone;
+without it, forwarded headers are trusted from anyone on the LAN.
+
 ## Sign-in
 
 The web app is locked with a password. On first start the server prints a one-time **setup

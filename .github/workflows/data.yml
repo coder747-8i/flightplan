@@ -1,6 +1,7 @@
 # Chart & airport data pack: rebuilt from the FAA's current 28-day cycle and published as
-# flightplan-data.zip on the `data` release, which the app's setup screen downloads.
-# Runs weekly and does nothing when the current cycle is already published.
+# flightplan-data.zip on the `data` release, which the app's setup screen offers by default.
+# Manual only now: a Flightplan server (deploy/lxc) builds its own data every cycle and hands
+# it to the desktop apps connected to it. Run this by hand to refresh the public download.
 name: Chart data
 
 on:
@@ -10,8 +11,6 @@ on:
         description: Rebuild even if this cycle is already published
         type: boolean
         default: false
-  schedule:
-    - cron: '17 6 * * 4'
 
 permissions:
   contents: write

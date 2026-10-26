@@ -49,7 +49,10 @@ fn sync(app: &mut App, ui: &mut egui::Ui) {
     let t = app.t;
     if let Some(c) = app.sync.cfg.clone() {
         widgets::para(ui, format!("{}  Connected to {}{}", ph::CLOUD_CHECK, c.url, if c.account.is_empty() { String::new() } else { format!(" as {}", c.account) }), t.ok, 12.5);
-        faint(ui, &t, "Saved plans sync both ways: save one here and it's in the web app straight away, and the other way round.");
+        faint(ui, &t, "Saved plans sync both ways: save one here and it's in the web app straight away, and the other way round. Chart data comes from the server too: a new FAA cycle downloads by itself.");
+        if let Some(cy) = &app.sync.server_cycle {
+            faint(ui, &t, format!("Server chart data: FAA cycle {cy}"));
+        }
         if let Some(at) = app.sync.last_sync {
             faint(ui, &t, format!("Last synced {}", at.format("%H:%M:%S")));
         }

@@ -55,8 +55,11 @@ const MAX_USERS: usize = 25;
 
 /// Settings read once from the environment.
 struct Env {
-    /// take the client address and scheme from the reverse proxy's headers
+    /// take the client address and scheme from the reverse proxy's headers (FP_TRUST_PROXY=1:
+    /// from anyone; FP_TRUSTED_PROXIES=10.0.0.5,10.0.0.6: only from those machines, e.g. the one
+    /// running a Cloudflare tunnel)
     trust_proxy: bool,
+    trusted: Vec<IpAddr>,
     /// always mark cookies Secure (when TLS ends somewhere we can't see)
     secure_cookies: bool,
 }
@@ -65,7 +68,8 @@ fn env() -> &'static Env {
     static E: OnceLock<Env> = OnceLock::new();
     E.get_or_init(|| {
         let on = |k: &str| std::env::var(k).is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"));
-        Env { trust_proxy: on("FP_TRUST_PROXY"), secure_cookies: on("FP_SECURE_COOKIES") }
+        let trusted: Vec<IpAddr> = std::env::var("FP_TRUSTED_PROXIES").unwrap_or_default().split([',', ' ']).filter_map(|s| s.trim().parse().ok()).collect();
+        Env { trust_proxy: on("FP_TRUST_PROXY") || !trusted.is_empty(), trusted, secure_cookies: on("FP_SECURE_COOKIES") }
     })
 }
 
@@ -621,22 +625,31 @@ pub struct Client {
     pub https: bool,
 }
 
-/// The address the proxy saw: the last X-Forwarded-For entry (the one it appended), or
-/// X-Real-IP.
+/// The address the proxy saw: Cloudflare's CF-Connecting-IP, else the last X-Forwarded-For entry
+/// (the one the proxy appended), else X-Real-IP.
 fn forwarded_ip(h: &HeaderMap) -> Option<IpAddr> {
+    if let Some(ip) = h.get("cf-connecting-ip").and_then(|v| v.to_str().ok()).and_then(|s| s.trim().parse().ok()) {
+        return Some(ip);
+    }
     let xff = h.get_all("x-forwarded-for").iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(',')).map(str::trim).filter(|v| !v.is_empty()).last().map(String::from);
     xff.or_else(|| h.get("x-real-ip").and_then(|v| v.to_str().ok()).map(|s| s.trim().to_string())).and_then(|s| s.parse().ok())
 }
 
-/// Whether the request came over HTTPS (as the trusted proxy says).
-pub fn is_https(h: &HeaderMap) -> bool {
-    env().trust_proxy && h.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
+/// Whether forwarded headers from this peer count.
+fn from_proxy(peer: Option<IpAddr>) -> bool {
+    let e = env();
+    e.trust_proxy && (e.trusted.is_empty() || peer.is_some_and(|p| e.trusted.contains(&p)))
+}
+
+/// Whether the request came over HTTPS (as a trusted proxy says).
+pub fn is_https(h: &HeaderMap, peer: Option<IpAddr>) -> bool {
+    from_proxy(peer) && h.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
 }
 
 pub fn client_of(h: &HeaderMap, peer: Option<IpAddr>) -> Client {
     let unknown = IpAddr::from([255, 255, 255, 255]);
-    let ip = if env().trust_proxy { forwarded_ip(h).or(peer) } else { peer };
-    Client { ip: ip.unwrap_or(unknown), https: is_https(h) }
+    let ip = if from_proxy(peer) { forwarded_ip(h).or(peer) } else { peer };
+    Client { ip: ip.unwrap_or(unknown), https: is_https(h, peer) }
 }
 
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Client {

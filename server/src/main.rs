@@ -11,6 +11,10 @@ async fn main() -> anyhow::Result<()> {
     let root = PathBuf::from(std::env::var("FP_ROOT").unwrap_or_else(|_| "..".into()));
     let _ = dotenvy::from_path(root.join(".env"));
     let cfg = flightplan_server::Config::from_root(&root);
+    if std::env::args().nth(1).as_deref() == Some("install-data") {
+        let zip = std::env::args().nth(2).ok_or_else(|| anyhow::anyhow!("usage: flightplan-server install-data <flightplan-data.zip>"))?;
+        return install_data(cfg, zip.into()).await;
+    }
     if std::env::args().nth(1).as_deref() == Some("set-password") {
         return set_password(&cfg, &std::env::args().nth(2).unwrap_or_default());
     }
@@ -44,4 +48,26 @@ fn set_password(cfg: &flightplan_server::Config, who: &str) -> anyhow::Result<()
     auth.set_password(who, &pw, (!name.trim().is_empty()).then_some(name.as_str()))?;
     eprintln!("Password saved. {} has to sign in again everywhere, desktop apps included.", if who.is_empty() { "The owner" } else { who });
     Ok(())
+}
+
+/// Install a data-pack zip into this server's data (used by the container's data updater).
+async fn install_data(cfg: flightplan_server::Config, zip: std::path::PathBuf) -> anyhow::Result<()> {
+    if !zip.is_file() {
+        anyhow::bail!("{} doesn't exist", zip.display());
+    }
+    let state = flightplan_server::state(cfg)?;
+    flightplan_server::setup::start_zip(state.clone(), zip)?;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let (info, job) = flightplan_server::setup::current(&state);
+        match job.state {
+            "done" => {
+                let info = info.unwrap_or_default();
+                eprintln!("Chart data installed: cycle {} (until {}).", info.cycle.unwrap_or_default(), info.expires.unwrap_or_default());
+                return Ok(());
+            }
+            "error" => anyhow::bail!("install failed: {}", job.message),
+            _ => {}
+        }
+    }
 }

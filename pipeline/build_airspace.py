@@ -9,13 +9,15 @@ Label points (pole of inaccessibility) go to a second file so each shelf is labe
 
 Usage: .venv/bin/python -I pipeline/build_airspace.py
 """
-import json
+import sys
 from pathlib import Path
 
 from shapely.geometry import mapping, shape
 from shapely.ops import polylabel
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "pipeline"))
+from geojson_stream import Writer, features  # noqa: E402  (streams: the class airspace file is ~300 MB)
 RAW = ROOT / "data" / "raw" / "arcgis"
 OUT = ROOT / "data" / "build"
 
@@ -99,40 +101,45 @@ def norm(p, sua: bool):
 
 
 def build():
-    shapes, labels = [], []
-    for fname, sua in (("Class_Airspace.geojson", False), ("Special_Use_Airspace.geojson", True)):
-        path = RAW / fname
-        if not path.exists() and (RAW / fname.replace(".geojson", ".partial")).exists():
-            path = RAW / fname.replace(".geojson", ".partial")  # mid-download dev builds
-        fc = json.load(open(path))
-        for f in fc["features"]:
-            if not f.get("geometry"):
-                continue
-            props = norm(f["properties"], sua)
-            if not props:
-                continue
-            geom = shape(f["geometry"])
-            if not geom.is_valid:
-                geom = geom.buffer(0)
-            if geom.is_empty:
-                continue
-            shapes.append({"type": "Feature", "geometry": mapping(geom), "properties": props,
-                           "tippecanoe": {"minzoom": MINZOOM[props["kind"]]}})
-            if props["label"] and props["kind"] not in ("E2", "E3", "E4", "E6", "MODEC"):
-                polys = list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom]
-                biggest = max(polys, key=lambda g: g.area)
-                try:
-                    pt = polylabel(biggest, tolerance=0.002)
-                except Exception:
-                    pt = biggest.representative_point()
-                lp = {k: props[k] for k in ("kind", "lo", "hi", "lo_agl", "label", "name", "range")}
-                labels.append({"type": "Feature", "geometry": mapping(pt), "properties": lp,
-                               "tippecanoe": {"minzoom": max(MINZOOM[props["kind"]] + 2, 7)}})
-    OUT.mkdir(parents=True, exist_ok=True)
-    for name, feats in (("airspace", shapes), ("airspace_labels", labels)):
-        with open(OUT / f"{name}.geojson", "w") as fh:
-            json.dump({"type": "FeatureCollection", "features": feats}, fh, separators=(",", ":"))
-        print(name, len(feats))
+    labels = []
+    with Writer(OUT / "airspace.geojson") as shapes:
+        for fname, sua in (("Class_Airspace.geojson", False), ("Special_Use_Airspace.geojson", True)):
+            path = RAW / fname
+            if not path.exists() and (RAW / fname.replace(".geojson", ".partial")).exists():
+                path = RAW / fname.replace(".geojson", ".partial")  # mid-download dev builds
+            for f in features(path):
+                add(f, sua, shapes, labels)
+    print("airspace", shapes.count)
+    with Writer(OUT / "airspace_labels.geojson") as w:
+        for f in labels:
+            w.write(f)
+    print("airspace_labels", len(labels))
+
+
+def add(f, sua, shapes, labels):
+    """One raw feature: the normalised shape (written straight out) and its label point."""
+    if not f.get("geometry"):
+        return
+    props = norm(f["properties"], sua)
+    if not props:
+        return
+    geom = shape(f["geometry"])
+    if not geom.is_valid:
+        geom = geom.buffer(0)
+    if geom.is_empty:
+        return
+    shapes.write({"type": "Feature", "geometry": mapping(geom), "properties": props,
+                  "tippecanoe": {"minzoom": MINZOOM[props["kind"]]}})
+    if props["label"] and props["kind"] not in ("E2", "E3", "E4", "E6", "MODEC"):
+        polys = list(geom.geoms) if geom.geom_type == "MultiPolygon" else [geom]
+        biggest = max(polys, key=lambda g: g.area)
+        try:
+            pt = polylabel(biggest, tolerance=0.002)
+        except Exception:
+            pt = biggest.representative_point()
+        lp = {k: props[k] for k in ("kind", "lo", "hi", "lo_agl", "label", "name", "range")}
+        labels.append({"type": "Feature", "geometry": mapping(pt), "properties": lp,
+                       "tippecanoe": {"minzoom": max(MINZOOM[props["kind"]] + 2, 7)}})
 
 
 if __name__ == "__main__":

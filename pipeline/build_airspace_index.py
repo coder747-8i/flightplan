@@ -4,12 +4,15 @@ Output: data/build/airspace_index.json  [{k, n, lo, hi, agl, b:[minx,miny,maxx,m
 Usage: .venv/bin/python -I pipeline/build_airspace_index.py
 """
 import json
+import sys
 from pathlib import Path
 
 from shapely.geometry import shape
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
+sys.path.insert(0, str(ROOT / "pipeline"))
+from geojson_stream import features  # noqa: E402  (streams: airspace.geojson is ~300 MB)
 
 
 def rings(geom):
@@ -22,9 +25,8 @@ def rings(geom):
 
 
 def build():
-    fc = json.load(open(B / "airspace.geojson"))
     out = []
-    for f in fc["features"]:
+    for f in features(B / "airspace.geojson"):
         p = f["properties"]
         g = shape(f["geometry"]).simplify(0.0003, preserve_topology=True)
         if g.is_empty:

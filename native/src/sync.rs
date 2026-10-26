@@ -7,6 +7,10 @@
 //! Plans travel in the web app's format (camelCase, string waypoint uids). On each (re)connect
 //! the lists are merged: plans the server doesn't have yet are uploaded, plans deleted on the
 //! server since the last sync are deleted here.
+//!
+//! Chart data comes from the server too: every few hours (and on connecting) the app asks what
+//! FAA cycle the server has (/api/datapack) and downloads and installs it when it's newer than
+//! what's installed, so a server that builds its own data keeps every connected desktop current.
 
 use crate::backend::{Backend, Task};
 use crate::model::place::{new_uid, Kind, Place, Waypoint};
@@ -60,7 +64,15 @@ pub struct Sync {
     again: bool,
     /// the next fetch merges with local plans (after connecting or starting up)
     merge: bool,
+    /// the server's chart data, checked every few hours
+    pack: Task<anyhow::Result<Value>>,
+    pack_at: Option<std::time::Instant>,
+    /// FAA cycle the server has (for Settings)
+    pub server_cycle: Option<String>,
 }
+
+/// How often to ask the server whether it has newer chart data.
+const PACK_CHECK: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 
 fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(d) = path.parent() {
@@ -412,6 +424,38 @@ impl Sync {
             }
             if std::mem::take(&mut self.again) {
                 self.refetch(be);
+            }
+        }
+        // chart data from the server
+        if let Some(c) = self.cfg.clone() {
+            if self.pack_at.is_none_or(|t| t.elapsed() > PACK_CHECK) && !self.pack.pending() {
+                self.pack_at = Some(std::time::Instant::now());
+                let http = be.http.clone();
+                self.pack = be.spawn(async move { call(http, reqwest::Method::GET, format!("{}/api/datapack", c.url), c.token, None).await });
+            }
+        }
+        if let Some(r) = self.pack.poll() {
+            match r {
+                Ok(v) if v["available"].as_bool() == Some(true) => {
+                    let cycle = v["cycle"].as_str().map(String::from);
+                    self.server_cycle = cycle.clone();
+                    let (info, job) = flightplan_server::setup::current(&be.server);
+                    let installed = info.as_ref().and_then(|i| i.cycle.clone());
+                    let busy = matches!(job.state, "downloading" | "uploading" | "copying" | "extracting" | "checking");
+                    if cycle.is_some() && cycle != installed && !busy {
+                        if let Some(c) = self.cfg.clone() {
+                            let _g = be.rt().enter();
+                            match flightplan_server::setup::start_download_with(be.server.clone(), format!("{}/api/datapack/file", c.url), Some(c.token)) {
+                                Ok(()) => toast = Some(format!("Getting chart data for the {} cycle from your server", cycle.unwrap_or_default())),
+                                Err(e) => self.error = format!("Couldn't get chart data from the server: {e:#}"),
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(e) if e.to_string() == "unauthorized" => return Some(self.signed_out()),
+                // an older server without /api/datapack, or offline: try again later
+                Err(_) => {}
             }
         }
         let mut failed = None;

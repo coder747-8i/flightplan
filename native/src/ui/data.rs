@@ -28,6 +28,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, compact: bool) {
         }
         None => widgets::status(ui, &t, Tone::Accent, ph::CLOUD_ARROW_DOWN, &["Chart data needed".into(), "Airports, navaids, airspace, obstacles and chart tiles: one download of about 180 MB, updated every 28 days.".into()]),
     }
+    if let Some(c) = &app.sync.cfg {
+        widgets::para(ui, format!("{}  Updates come from your Flightplan server ({}) when it has a new cycle.", ph::CLOUD_CHECK, c.url), t.text2, 11.5);
+    }
     ui.add_space(8.0);
     if busy {
         Frame::new().stroke(egui::Stroke::new(1.0, t.line_strong)).corner_radius(CornerRadius::same(11)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {

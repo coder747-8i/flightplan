@@ -38,8 +38,6 @@ done
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 need() { command -v "$1" >/dev/null || { echo "missing $1: $2" >&2; exit 1; }; }
 need python3 "install Python 3.10 or newer"
-need git "install git"
-need make "install make and a C++ compiler (build-essential / Xcode command line tools)"
 
 step "Python environment"
 if [ ! -x .venv/bin/python ]; then
@@ -63,6 +61,9 @@ if [ -z "$TC" ] && command -v tippecanoe >/dev/null; then TC="$(command -v tippe
 if [ -z "$TC" ]; then
   TC="$ROOT/pipeline/.tools/tippecanoe/tippecanoe"
   if [ ! -x "$TC" ]; then
+    # only building tippecanoe needs these
+    need git "install git"
+    need make "install make and a C++ compiler (build-essential / Xcode command line tools)"
     rm -rf pipeline/.tools/tippecanoe
     mkdir -p pipeline/.tools
     git clone -q --depth 1 https://github.com/felt/tippecanoe.git pipeline/.tools/tippecanoe
@@ -83,7 +84,13 @@ if [ "$fetch" = 1 ]; then
   step "FAA airspace, airports, navaids, airways (ArcGIS)"
   python3 -I pipeline/fetch_arcgis.py 2>&1 | tail -n 7
   step "FBO candidates (Overture Maps)"
-  .venv/bin/python -I pipeline/fetch_overture_fbo.py
+  # the FBO directory hardly changes: reuse a download younger than 90 days (FP_REFRESH_FBO=1 forces)
+  places=data/raw/overture/aviation_places.parquet
+  if [ -f "$places" ] && [ -z "${FP_REFRESH_FBO:-}" ] && [ -n "$(find "$places" -mtime -90 2>/dev/null)" ]; then
+    echo "reusing $places"
+  else
+    .venv/bin/python -I pipeline/fetch_overture_fbo.py
+  fi
 fi
 step "Building"
 python3 -I pipeline/build_nasr.py

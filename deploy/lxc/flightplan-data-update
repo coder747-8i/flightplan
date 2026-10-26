@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Build and install new FAA chart data when the FAA starts a new 28-day cycle (run every 6 h by
+# flightplan-data.timer; FORCE=1 rebuilds the current cycle anyway). The build runs in
+# /opt/flightplan/work as the flightplan user; the finished pack is installed (the server keeps
+# it to hand to connected desktop apps), the server restarts onto it, and the downloads and
+# intermediate files are deleted. If anything fails, the old data stays in place.
+set -euo pipefail
+
+APP=/opt/flightplan
+WORK=$APP/work
+exec 9>"$WORK/.lock"
+flock -n 9 || { echo "a build is already running"; exit 0; }
+
+as_fp() { runuser -u flightplan -- "$@"; }
+
+current="$(as_fp python3 -I "$APP/pipeline/fetch_faa.py" --print-cycle)"
+installed="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("cycle") or "")' "$APP/data/build/manifest.json" 2>/dev/null || true)"
+echo "FAA cycle $current, installed ${installed:-none}"
+if [ "$current" = "$installed" ] && [ "${FORCE:-}" != 1 ]; then
+  echo "up to date"
+  exit 0
+fi
+
+# delete downloads and intermediate files; keep the FBO directory download (refreshed every 90 days)
+cleanup() {
+  find "${WORK:?}/data" -mindepth 1 -maxdepth 2 ! -path "$WORK/data/raw" ! -path "$WORK/data/raw/overture" -exec rm -rf {} + 2>/dev/null || true
+  rm -rf "${WORK:?}/tiles" "${WORK:?}/dist" "${WORK:?}/pipeline"
+}
+trap cleanup EXIT
+cleanup
+# the pipeline works relative to its own folder: give it a private copy
+cp -r "$APP/pipeline" "$WORK/pipeline"
+chown -R flightplan:flightplan "$WORK"
+start=$(date +%s)
+as_fp env TIPPECANOE=/usr/local/bin/tippecanoe TIPPECANOE_MAX_THREADS=2 FP_DUCKDB_MEMORY="${FP_DUCKDB_MEMORY:-512MB}" \
+  bash "$WORK/pipeline/build_datapack.sh" --cycle "$current" --out "$WORK/dist/flightplan-data.zip"
+as_fp env FP_ROOT="$APP" "$APP/bin/flightplan-server" install-data "$WORK/dist/flightplan-data.zip"
+systemctl restart flightplan.service
+echo "installed cycle $current in $(( ($(date +%s) - start) / 60 )) min"

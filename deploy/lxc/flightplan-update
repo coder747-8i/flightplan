@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Update Flightplan to the latest server release and apply Debian updates, keeping all data,
+# passwords and settings. Run as root:  flightplan-update
+set -euo pipefail
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+APP=/opt/flightplan
+REPO="${REPO:-coder747-8i/flightplan}"
+URL="https://github.com/$REPO/releases/download/server/flightplan-server-linux-x86_64.tar.gz"
+export DEBIAN_FRONTEND=noninteractive
+
+echo "== Debian updates"
+apt-get -qq update && apt-get -y -qq upgrade >/dev/null && apt-get -y -qq autoremove --purge >/dev/null
+rm -rf /var/lib/apt/lists/* /var/cache/apt/*.bin
+
+echo "== Flightplan"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL -o "$tmp/fp.tar.gz" "$URL"
+tar -C "$tmp" -xzf "$tmp/fp.tar.gz"
+new="$(cat "$tmp/flightplan/VERSION" 2>/dev/null || echo '?')"
+old="$(cat "$APP/VERSION" 2>/dev/null || echo '?')"
+if [ "$new" = "$old" ] && [ "${FORCE:-}" != 1 ]; then
+  echo "already on $old"
+  exit 0
+fi
+install -m 0755 "$tmp/flightplan/bin/flightplan-server" "$APP/bin/flightplan-server.new"
+rm -rf "$APP/web/dist.new" "$APP/pipeline.new"
+cp -r "$tmp/flightplan/web/dist" "$APP/web/dist.new"
+cp -r "$tmp/flightplan/pipeline" "$APP/pipeline.new"
+systemctl stop flightplan.service
+mv "$APP/bin/flightplan-server.new" "$APP/bin/flightplan-server"
+rm -rf "$APP/web/dist" "$APP/pipeline" && mv "$APP/web/dist.new" "$APP/web/dist" && mv "$APP/pipeline.new" "$APP/pipeline"
+rm -rf "$APP/deploy" && cp -r "$tmp/flightplan/deploy" "$APP/deploy"
+install -m 0755 "$APP/deploy/flightplan-data-update" /usr/local/bin/flightplan-data-update
+install -m 0755 "$APP/deploy/flightplan-update" /usr/local/bin/flightplan-update
+echo "$new" >"$APP/VERSION"
+chown -R flightplan:flightplan "$APP/bin" "$APP/web" "$APP/pipeline"
+systemctl start flightplan.service
+echo "updated $old -> $new"

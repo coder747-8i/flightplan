@@ -9,6 +9,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from geojson_stream import Writer  # noqa: E402  (written as it downloads: Class_Airspace is ~300 MB)
+
 BASE = "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services"
 OUT = Path(__file__).resolve().parent.parent / "data" / "raw" / "arcgis"
 
@@ -38,15 +41,19 @@ def get(url: str) -> dict:
 def fetch(layer: str, page: int) -> None:
     url = f"{BASE}/{layer}/FeatureServer/0/query"
     total = get(f"{url}?where=1%3D1&returnCountOnly=true&f=json")["count"]
-    feats = []
+    with Writer(OUT / f"{layer}.geojson") as out:
+        fetch_into(url, layer, page, total, out)
+
+
+def fetch_into(url: str, layer: str, page: int, total: int, out: Writer) -> None:
     empty = 0
-    while len(feats) < total:
+    while out.count < total:
         params = {
             "where": "1=1",
             "outFields": "*",
             "outSR": "4326",
             "f": "geojson",
-            "resultOffset": len(feats),
+            "resultOffset": out.count,
             "resultRecordCount": page,
             "orderByFields": "OBJECTID",
             "geometryPrecision": 6,
@@ -55,14 +62,13 @@ def fetch(layer: str, page: int) -> None:
         if not batch:  # the service sometimes returns an empty page under load; retry it
             empty += 1
             if empty > 8:
-                raise RuntimeError(f"{layer}: stuck at {len(feats)}/{total}")
+                raise RuntimeError(f"{layer}: stuck at {out.count}/{total}")
             time.sleep(5 * empty)
             continue
         empty = 0
-        feats.extend(batch)
-        print(f"{layer}: {len(feats)}/{total}", file=sys.stderr)
-    OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / f"{layer}.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+        for f in batch:
+            out.write(f)
+        print(f"{layer}: {out.count}/{total}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,62 @@
+# Flightplan server for Linux x86_64: the binary, the built web app and the data pipeline in one
+# tarball on the rolling `server` release. deploy/lxc/install.sh (and the Proxmox one-liner)
+# installs from it. Rebuilt on every push to main that touches the server, web app or pipeline.
+name: Server
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['server/**', 'web/**', 'pipeline/**', 'deploy/**', '.github/workflows/server.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # an older glibc than Debian 12's, so the binary runs there
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web app
+        run: cd web && npm ci && npm run build
+
+      - name: Server
+        run: cd server && cargo build --release --locked
+
+      - name: Package
+        run: |
+          mkdir -p pkg/flightplan/bin pkg/flightplan/web
+          cp server/target/release/flightplan-server pkg/flightplan/bin/
+          strip pkg/flightplan/bin/flightplan-server
+          cp -r web/dist pkg/flightplan/web/dist
+          rsync -a --exclude .tools --exclude __pycache__ pipeline/ pkg/flightplan/pipeline/
+          cp -r deploy/lxc pkg/flightplan/deploy
+          git rev-parse --short HEAD > pkg/flightplan/VERSION
+          tar -C pkg -czf flightplan-server-linux-x86_64.tar.gz flightplan
+          ls -la flightplan-server-linux-x86_64.tar.gz
+
+      - name: Publish
+        run: |
+          notes="Flightplan server for Linux x86_64 (commit $(git rev-parse --short HEAD)). Install with deploy/lxc/install.sh or the Proxmox one-liner in the README."
+          if gh release view server >/dev/null 2>&1; then
+            gh release upload server flightplan-server-linux-x86_64.tar.gz --clobber
+            gh release edit server --notes "$notes"
+          else
+            gh release create server flightplan-server-linux-x86_64.tar.gz --prerelease --title "Server (Linux x86_64)" --notes "$notes"
+          fi

@@ -24,6 +24,10 @@ A US VFR/IFR flight planner. It comes as two front ends over one Rust core:
 - `pipeline/`: Python + tippecanoe that build the chart data pack from the FAA's 28-day cycle
   (`build_datapack.sh`, also embedded in the app as "Build on this computer").
 - `tools/context-mcp/`: this context server.
+- `deploy/`: `proxmox/flightplan-lxc.sh` (run on a Proxmox host: creates the LXC) and
+  `lxc/install.sh` (in-container installer: systemd units, data timer) with `lxc/flightplan-data-update`
+  and `lxc/flightplan-update`. `.github/workflows/server.yml` publishes the tarball they install
+  (rolling `server` release); `data.yml` is manual-only now.
 
 ## Desktop app map (`native/src`)
 
